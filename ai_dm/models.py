@@ -40,3 +40,17 @@ class TurnResponse(BaseModel):
     dm_thoughts: str = Field(
         description="Скрытые заметки мастера: как изменился скрытый сюжет или отношение окружения"
     )
+
+
+# --- Модели для функции старта кампании ---
+class CampaignStartRequest(BaseModel):
+    setting_theme: str = Field(description="Тема или пожелание к приключению (напр. 'Заброшенная крипта')")
+    characters: List[CharacterState]
+    monster_encounter: str = Field("goblin", description="Индекс монстра из D&D 5e API (напр. goblin, skeleton, wolf)")
+
+class CampaignStartResponse(BaseModel):
+    campaign_title: str = Field(description="Название приключения")
+    hidden_plot: str = Field(description="Скрытая тайна сюжета (известна только Мастеру)")
+    starting_location: str = Field(description="Название первой локации")
+    room_context: str = Field(description="Описание обстановки стартовой комнаты")
+    intro_narrative: str = Field(description="Вводный атмосферный текст для игроков (завязка истории)")

@@ -3,13 +3,14 @@ import json
 import re
 from dotenv import load_dotenv
 from openai import OpenAI
-from ai_dm.models import TurnRequest, TurnResponse
+from ai_dm.models import TurnRequest, TurnResponse, CampaignStartRequest, CampaignStartResponse
+from ai_dm.dnd_api import DnD5eClient
 
 load_dotenv()
 
 client = OpenAI(
     api_key=os.getenv("OPENAI_API_KEY"),
-    base_url=os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
+    base_url=os.getenv("OPENAI_BASE_URL", "https://router.huggingface.co/v1"),
     default_headers={
         "HTTP-Referer": "https://github.com/madandalone/ai-dungeon-master",
         "X-Title": "AI Dungeon Master",
@@ -17,17 +18,45 @@ client = OpenAI(
 )
 
 SYSTEM_PROMPT = """
-Ты — AI Dungeon Master (Ведущий) в настольной ролевой игре.
-Твоя задача — вести захватывающее повествование, соблюдать правила и реагировать на действия игроков.
-
-Правила поведения:
-1. Опирайся на скрытый сюжет, но никогда не раскрывай его напрямую — давай намёки через окружение и детали.
-2. Будь справедливым: за рискованные или глупые действия наказывай уроном (HP) или потерей предметов.
-3. Отвечай СТРОГО в формате JSON без лишних пояснений до или после него.
+Ты — AI Dungeon Master (Ведущий) в настольной ролевой игре D&D 5e.
+Твоя цель: вести атмосферную игру, следовать правилам SRD 5e и реагировать на действия игроков.
+Отвечай СТРОГО валидным JSON-объектом в соответствии с требуемой схемой.
 """
 
+def generate_campaign_start(req: CampaignStartRequest) -> CampaignStartResponse:
+    """Генерирует завязку кампании, используя канонические статы монстра из D&D API."""
+    monster_stats = DnD5eClient.get_monster(req.monster_encounter)
+    stats_text = json.dumps(monster_stats, ensure_ascii=False) if monster_stats else "Базовый противник"
+
+    schema_json = json.dumps(CampaignStartResponse.model_json_schema(), ensure_ascii=False, indent=2)
+
+    prompt = f"""
+Создай начало приключения D&D 5e.
+Сеттинг / Пожелание: {req.setting_theme}
+Персонажи игроков: {json.dumps([c.model_dump() for c in req.characters], ensure_ascii=False)}
+
+КАНОНИЧЕСКИЙ МОНСТР ИЗ D&D 5e API (используй его в сюжете):
+{stats_text}
+
+ТРЕБОВАНИЯ К ФОРМАТУ:
+Верни JSON по схеме:
+{schema_json}
+"""
+    response = client.chat.completions.create(
+        model=os.getenv("MODEL_NAME", "Qwen/Qwen3.8-27B"),
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.8,
+    )
+    raw = response.choices[0].message.content.strip()
+    clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+    return CampaignStartResponse.model_validate_json(clean)
+
+
 def process_turn(request: TurnRequest) -> TurnResponse:
-    # Получаем схему JSON напрямую из модели Pydantic
+    """Обработка одного хода игрока."""
     schema_json = json.dumps(TurnResponse.model_json_schema(), ensure_ascii=False, indent=2)
 
     user_prompt = f"""
@@ -45,25 +74,18 @@ def process_turn(request: TurnRequest) -> TurnResponse:
 ### ДЕЙСТВИЕ ИГРОКА:
 "{request.player_action}"
 
-### ТРЕБОВАНИЕ К ФОРМАТУ ОТВЕТА:
-Верни ответ СТРОГО в виде JSON-объекта, соответствующего следующей JSON-схеме:
+ТРЕБОВАНИЕ К ФОРМАТУ ОТВЕТА:
+Верни ответ СТРОГО в виде JSON по схеме:
 {schema_json}
-Не оборачивай ответ ни во что, кроме чистого JSON (или блока ```json ... ```).
 """
-
     response = client.chat.completions.create(
-        model=os.getenv("MODEL_NAME", "qwen/qwen3.8-27b:free"),
+        model=os.getenv("MODEL_NAME", "Qwen/Qwen3.8-27B"),
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
-        temperature=0.7,
+        temperature=0.8,
     )
-
-    raw_content = response.choices[0].message.content.strip()
-
-    # Очищаем ответ от markdown-блоков ```json ... ```, если модель их добавила
-    clean_json = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_content, flags=re.MULTILINE).strip()
-
-    # Pydantic сам валидирует JSON и превращает его в объект TurnResponse
-    return TurnResponse.model_validate_json(clean_json)
+    raw = response.choices[0].message.content.strip()
+    clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+    return TurnResponse.model_validate_json(clean)
