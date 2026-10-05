@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AI Dungeon Master</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">AI Dungeon Master</p>
+        <h1>Table</h1>
+      </div>
+      <p id="cache-note" class="cache-note">Displayed state is a local cache, not the game engine.</p>
+    </header>
+
+    <main class="board">
+      <section class="panel" aria-labelledby="session-heading">
+        <h2 id="session-heading">Session</h2>
+        <p id="health-status" class="status" role="status">Checking backend…</p>
+        <button id="recheck-health" type="button">Check backend again</button>
+
+        <form id="create-session-form">
+          <h3>Create session</h3>
+          <label>
+            Name
+            <input id="session-name" name="session-name" type="text" maxlength="80" required>
+          </label>
+          <button type="submit">Create on backend</button>
+          <p id="session-result" class="hint" role="status"></p>
+        </form>
+
+        <form id="join-session-form">
+          <h3>Use session id</h3>
+          <label>
+            Session id
+            <input id="join-session-id" name="join-session-id" type="text" maxlength="80" required>
+          </label>
+          <button type="submit">Keep id in local cache</button>
+          <p class="hint">The backend does not confirm an existing session yet. This only stores the id in the browser.</p>
+        </form>
+
+        <form id="character-form">
+          <h3>Character</h3>
+          <p class="hint">Saved in this browser only. The backend does not store characters yet.</p>
+          <label>
+            Name
+            <input id="character-name" name="character-name" type="text" maxlength="60" required>
+          </label>
+          <label>
+            Concept
+            <input id="character-concept" name="character-concept" type="text" maxlength="120">
+          </label>
+          <label>
+            HP
+            <input id="character-hp" name="character-hp" type="number" min="1" max="999" value="10" required>
+          </label>
+          <fieldset>
+            <legend>Stats</legend>
+            <div id="stat-rows"></div>
+            <button id="add-stat" type="button">Add stat</button>
+          </fieldset>
+          <label>
+            Starting item
+            <input id="starting-item" name="starting-item" type="text" maxlength="60">
+          </label>
+          <button type="submit">Add character to cache</button>
+        </form>
+      </section>
+
+      <section class="panel chat-panel" aria-labelledby="chat-heading">
+        <h2 id="chat-heading">Play</h2>
+        <p class="hint">Dungeon Master is not connected yet. Sending an action only records it in the local cache.</p>
+        <ol id="log" class="log"></ol>
+        <form id="action-form" class="action-form">
+          <label>
+            Character
+            <select id="acting-character" name="acting-character" required></select>
+          </label>
+          <label>
+            Action
+            <textarea id="action-text" name="action-text" rows="3" maxlength="500" required placeholder="What does your character do?"></textarea>
+          </label>
+          <button type="submit">Send action</button>
+        </form>
+      </section>
+
+      <section class="panel" aria-labelledby="state-heading">
+        <h2 id="state-heading">Public state</h2>
+        <dl class="facts">
+          <div>
+            <dt>Session</dt>
+            <dd id="state-session">No session</dd>
+          </div>
+          <div>
+            <dt>Location</dt>
+            <dd id="state-location">Unknown</dd>
+          </div>
+        </dl>
+        <div id="sheets"></div>
+      </section>
+    </main>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>
