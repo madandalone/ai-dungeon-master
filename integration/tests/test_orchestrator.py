@@ -60,6 +60,16 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(req.game_state.location, "tavern")
         self.assertEqual(req.game_state.active_characters[0].inventory, ["Кинжал"])
 
+    def test_rag_rules_service_is_a_drop_in_replacement_for_russian_actions(self):
+        from rules_service import RagRulesService
+        from rules_service.tests.test_rag import ConceptEmbedder
+
+        rag = RagRulesService.from_text(BOOK, ConceptEmbedder())
+        dm = FakeDM(response())
+        action = make_action(text="Я хочу перепрыгнуть через пропасть")
+        TurnOrchestrator(dm, rag).play_turn(make_state(), action, "cult plot", self.dice)
+        self.assertIn("long jump", dm.requests[0].rules_summary)
+
     def test_no_matching_rules_uses_fallback(self):
         dm = FakeDM(response())
         TurnOrchestrator(dm, self.rules).play_turn(make_state(), PlayerAction("a1", "s1", "c1", "zzz", 3), "p", self.dice)
