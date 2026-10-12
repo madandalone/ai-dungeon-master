@@ -38,8 +38,14 @@ class OrchestratorTests(unittest.TestCase):
         self.rules = RulesService.from_text(BOOK)
         self.dice = Dice(SequenceSource([10]))
 
-    def play(self, dm, action=None, state=None):
-        return TurnOrchestrator(dm, self.rules).play_turn(state or make_state(), action or make_action(), "cult plot", self.dice)
+    def play(self, dm, action=None, state=None, history=None):
+        return TurnOrchestrator(dm, self.rules).play_turn(
+            state or make_state(),
+            action or make_action(),
+            "cult plot",
+            self.dice,
+            history=history,
+        )
 
     def test_accepted_turn_applies_dm_changes_through_engine(self):
         dm = FakeDM(response([StateDelta(character_name="Элиас", hp_change=-5, items_added=["Ключ", "Ключ"], items_removed=["Кинжал"])], "cellar"))
@@ -69,6 +75,26 @@ class OrchestratorTests(unittest.TestCase):
         action = make_action(text="Я хочу перепрыгнуть через пропасть")
         TurnOrchestrator(dm, rag).play_turn(make_state(), action, "cult plot", self.dice)
         self.assertIn("long jump", dm.requests[0].rules_summary)
+
+    def test_history_passed_when_model_supports_it(self):
+        from ai_dm.models import TurnRequest
+        if not getattr(TurnRequest, "model_fields", {}).get("history"):
+            self.skipTest("TurnRequest does not support history in this checkout")
+        from ai_dm.models import TurnHistoryEntry
+
+        dm = FakeDM(response())
+        entry = TurnHistoryEntry(player_action="предыдущий ход", narrative="было что-то", dm_notes="note")
+        self.play(dm, history=[entry])
+        self.assertEqual(len(dm.requests[0].history), 1)
+        self.assertEqual(dm.requests[0].history[0].player_action, "предыдущий ход")
+
+    def test_history_raises_when_model_does_not_support_it(self):
+        from ai_dm.models import TurnRequest
+        if getattr(TurnRequest, "model_fields", {}).get("history"):
+            self.skipTest("TurnRequest supports history in this checkout")
+
+        with self.assertRaises(ValueError):
+            self.play(FakeDM(response()), history=[{"player_action": "a", "narration": "n", "dm_notes": ""}])
 
     def test_no_matching_rules_uses_fallback(self):
         dm = FakeDM(response())

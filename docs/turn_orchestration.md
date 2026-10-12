@@ -5,7 +5,7 @@
 Backend вызывает её из будущего `POST /turns`.
 
 ```text
-PlayerAction + GameState (из хранилища Backend)
+PlayerAction + GameState + history (из хранилища Backend)
   -> TurnOrchestrator.play_turn(...)
        1. precheck:  apply_action(state, action, [], dice)   # дёшево отсекает STALE_REVISION и пр.
        2. правила:   RulesProvider.get_rules(action.text)
@@ -25,8 +25,8 @@ PlayerAction + GameState (из хранилища Backend)
 | Один источник истины | Состояние меняет только движок; нарратив не возвращается, если ход отклонён |
 | Не тратить LLM зря | Пустой `apply_action` до вызова DM отсекает устаревшую ревизию, чужую сессию и пустой текст |
 | Явные ошибки | Отказ движка - значение (`accepted=False`, `errors`). Сбой инфраструктуры - исключение `IntegrationError` (-> 5xx, ничего не сохранять) |
-| Чистота | Нет глобального состояния, кубики (`Dice`) и `action_id` приходят от Backend |
-| Секреты | `hidden_plot` уходит только в DM; `dm_notes` (`dm_thoughts`) Backend сохраняет у себя и не отдаёт на Frontend |
+| Чистота | Нет глобального состояния, кубики (`Dice`) и `action_id` приходят от Backend; история ходов передаётся аргументом |
+| Секреты | `hidden_plot` и `history` уходят только в DM; `dm_notes` Backend сохраняет у себя и не отдаёт на Frontend |
 
 ## Контракт между DM и движком (маппинг)
 
@@ -50,37 +50,80 @@ PlayerAction + GameState (из хранилища Backend)
 - `SkillCheck`, `AdjustStat`, `SetWorldFlag` DM пока не может предложить: в `TurnResponse` нет таких полей.
 - `room_context` DM'у передаёт Backend (в движке такого поля нет).
 
+## История ходов
+
+`TurnOrchestrator.play_turn` принимает опциональный аргумент `history` (последовательность
+`TurnHistoryEntry` или словарей). Если установленная модель `ai_dm.models.TurnRequest` поддерживает
+поле `history`, оно пробрасывается в DM; иначе выбрасывается `ValueError`. Это позволяет одной
+ветке `feature/rules-rag` работать и с текущим `main`, и с веткой Егора, где `history` добавлено.
+
+Backend должен передавать в `history` только **принятые** ходы, в порядке от старых к новым.
+Нарратив отклонённого хода не добавляется. `dm_notes` никогда не отдаётся Frontend.
+
+Альтернатива: оборачивать сам `DungeonMaster` в `HistoryAdapter` из `ai_dm/main.py`. В таком случае
+`play_turn` вызывается без `history`, а адаптер вставляет снимок истории непосредственно в запрос
+перед вызовом LLM. Оба подхода корректны; параметр в `play_turn` удобнее, если Backend сам управляет
+историей.
+
 ## Как использовать из Backend
 
 ```python
 from integration import TurnOrchestrator, IntegrationError
-from rules_service import RulesService
-from ai_dm import dm_engine          # модуль с process_turn(request)
+from rules_service import RagRulesService
+from rules_service.embedder import SentenceTransformerEmbedder
+from ai_dm.dm_engine import AIDungeonMaster
+from ai_dm.models import TurnHistoryEntry
 from engine.dice import Dice, LocalRandomSource
 
-orchestrator = TurnOrchestrator(dm=dm_engine, rules=RulesService.from_file(RULES_BOOK_PATH))
+orchestrator = TurnOrchestrator(
+    dm=AIDungeonMaster(),
+    rules=RagRulesService.from_file("data/srd.md", SentenceTransformerEmbedder(), cache_dir=".rules_index"),
+)
 
 try:
-    outcome = orchestrator.play_turn(state, action, hidden_plot, Dice(LocalRandomSource()), room_context)
+    outcome = orchestrator.play_turn(
+        state,
+        action,
+        hidden_plot,
+        Dice(LocalRandomSource(seed=42)),
+        room_context=room_context,
+        history=session_history[-10:],
+    )
 except IntegrationError:
     ...                                  # 502, ничего не сохранять
+
 if outcome.accepted:
-    ...  # compare-and-swap по revision, сохранить outcome.state, события, narration, dm_notes
+    session_state = outcome.state
+    session_history.append(TurnHistoryEntry(
+        player_action=action.text,
+        narrative=outcome.narration,
+        dm_notes=outcome.dm_notes or "",
+    ))
+    ...  # compare-and-swap по revision, сохранить state, события, narration, dm_notes
 else:
     ...  # outcome.errors[0].code == "STALE_REVISION" -> 409
 ```
 
-`ai_dm.dm_engine` подходит как `DungeonMaster`, потому что содержит функцию
-`process_turn(request) -> TurnResponse` (модуль структурно удовлетворяет `Protocol`).
-Импортировать его нужно только в точке сборки приложения: он требует пакет `openai`
-и ключ в `.env`, поэтому тесты `integration/` его не импортируют.
+## Согласование с Егорской валидацией DM
+
+Последняя версия `ai_dm` требует от DM:
+- писать `narrative`, `dm_thoughts`, `new_location` строго по-русски (с переводом терминов);
+- не переводить **существующие** имена персонажей и названия предметов из `active_characters`;
+- в `state_updates[].character_name` передавать имя точно, с учётом регистра и пробелов;
+- сохранять всё в валидном JSON и проходить одну попытку исправления.
+
+`Rules Service` продолжает возвращать англоязычный текст SRD как контекст правил. Перевод
+терминов в русский повествование - ответственность DM (промпт), а не Rules Service. Адаптер
+`integration/mapping.py` сохраняет имена персонажей и инвентаря в точности, как они есть
+в `GameState`, поэтому валидация имён не ломается на стыке.
 
 ## Тесты
 
-`python -m unittest discover -s integration/tests -t .` - 8 тестов с реальным движком и
-реальным `RulesService`, DM заменён заглушкой `FakeDM`. Проверяют: применение изменений,
-контекст для DM (правила, сюжет, состояние), отсечку устаревшей ревизии без вызова LLM,
-отбрасывание нарратива при отказе движка, неизвестного персонажа, сбой DM.
+`python -m unittest discover -s integration/tests -t .` - тесты с реальным движком и
+реальным `RulesService`/`RagRulesService`, DM заменён заглушкой `FakeDM`. Проверяют: применение
+изменений, контекст для DM (правила, сюжет, состояние, история при наличии поля), отсечку
+устаревшей ревизии без вызова LLM, отбрасывание нарратива при отказе движка, неизвестного
+персонажа, сбой DM, подмену keyword-поиска на RAG.
 
 ## Что остаётся Backend и не реализовано
 
@@ -94,3 +137,6 @@ HTTP-эндпоинт, загрузка/сохранение состояния 
   и игроку нужно показать ошибку или повторить запрос (политика - решение Backend).
 - Если DM вернул hp_change для персонажа, который не совершал действие, мы это допускаем
   (в групповой игре это нормально); ограничение при необходимости вводится в движке.
+- Предметы добавляются с `item_id == name`. Если DM изменит написание названия при удалении
+  (`Ключ` vs `ключ`), `RemoveItem` отклонится. Это контракт между генеративной моделью и
+  движком; решение может потребовать каталог предметов.
