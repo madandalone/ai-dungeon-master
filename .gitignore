@@ -37,3 +37,7 @@ yarn-error.log*
 
 # Logs
 *.log
+
+# Rules Service data and index
+data/
+.rules_index/

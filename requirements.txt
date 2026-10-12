@@ -1,3 +1,5 @@
 fastapi
 uvicorn
 pypdf
+numpy
+sentence-transformers
