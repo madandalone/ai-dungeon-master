@@ -1,107 +1,113 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#000000">
     <title>AI Dungeon Master</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">AI Dungeon Master</p>
-        <h1>Table</h1>
-      </div>
-      <p id="cache-note" class="cache-note">Displayed state is a local cache, not the game engine.</p>
-    </header>
+    <div class="app-shell" id="app-shell">
+      <aside class="sidebar" id="sidebar" aria-label="Навигация">
+        <div class="brand-row">
+          <button class="brand" id="brand-home" type="button" data-section-target="game" aria-label="AI Dungeon Master">
+            <span class="brand-mark" aria-hidden="true">♥</span>
+            <span class="brand-copy"><strong>AI DUNGEON</strong><span data-i18n="brand.subtitle">МАСТЕР</span></span>
+          </button>
+          <button class="icon-button sidebar-toggle" id="sidebar-toggle" type="button" aria-controls="sidebar" aria-expanded="true">
+            <span aria-hidden="true">«</span><span class="sr-only" data-i18n="nav.collapse">Свернуть меню</span>
+          </button>
+        </div>
 
-    <main class="board">
-      <section class="panel" aria-labelledby="session-heading">
-        <h2 id="session-heading">Session</h2>
-        <p id="health-status" class="status" role="status">Checking backend…</p>
-        <button id="recheck-health" type="button">Check backend again</button>
+        <nav class="primary-nav" aria-label="Основные разделы" data-i18n-aria-label="nav.aria">
+          <button class="nav-item is-active" type="button" data-section-target="game" aria-current="page"><span class="nav-icon" aria-hidden="true">♥</span><span class="nav-label" data-i18n="nav.game">Игра</span></button>
+          <button class="nav-item" type="button" data-section-target="characters"><span class="nav-icon" aria-hidden="true">♜</span><span class="nav-label" data-i18n="nav.characters">Герои</span></button>
+          <button class="nav-item" type="button" data-section-target="world"><span class="nav-icon" aria-hidden="true">✦</span><span class="nav-label" data-i18n="nav.world">Мир</span></button>
+          <button class="nav-item" type="button" data-section-target="session"><span class="nav-icon" aria-hidden="true">▣</span><span class="nav-label" data-i18n="nav.session">Сессия</span></button>
+        </nav>
 
-        <form id="create-session-form">
-          <h3>Create session</h3>
-          <label>
-            Name
-            <input id="session-name" name="session-name" type="text" maxlength="80" required>
-          </label>
-          <button type="submit">Create on backend</button>
-          <p id="session-result" class="hint" role="status"></p>
-        </form>
-
-        <form id="join-session-form">
-          <h3>Use session id</h3>
-          <label>
-            Session id
-            <input id="join-session-id" name="join-session-id" type="text" maxlength="80" required>
-          </label>
-          <button type="submit">Keep id in local cache</button>
-          <p class="hint">The backend does not confirm an existing session yet. This only stores the id in the browser.</p>
-        </form>
-
-        <form id="character-form">
-          <h3>Character</h3>
-          <p class="hint">Saved in this browser only. The backend does not store characters yet.</p>
-          <label>
-            Name
-            <input id="character-name" name="character-name" type="text" maxlength="60" required>
-          </label>
-          <label>
-            Concept
-            <input id="character-concept" name="character-concept" type="text" maxlength="120">
-          </label>
-          <label>
-            HP
-            <input id="character-hp" name="character-hp" type="number" min="1" max="999" value="10" required>
-          </label>
-          <fieldset>
-            <legend>Stats</legend>
-            <div id="stat-rows"></div>
-            <button id="add-stat" type="button">Add stat</button>
-          </fieldset>
-          <label>
-            Starting item
-            <input id="starting-item" name="starting-item" type="text" maxlength="60">
-          </label>
-          <button type="submit">Add character to cache</button>
-        </form>
-      </section>
-
-      <section class="panel chat-panel" aria-labelledby="chat-heading">
-        <h2 id="chat-heading">Play</h2>
-        <p class="hint">Dungeon Master is not connected yet. Sending an action only records it in the local cache.</p>
-        <ol id="log" class="log"></ol>
-        <form id="action-form" class="action-form">
-          <label>
-            Character
-            <select id="acting-character" name="acting-character" required></select>
-          </label>
-          <label>
-            Action
-            <textarea id="action-text" name="action-text" rows="3" maxlength="500" required placeholder="What does your character do?"></textarea>
-          </label>
-          <button type="submit">Send action</button>
-        </form>
-      </section>
-
-      <section class="panel" aria-labelledby="state-heading">
-        <h2 id="state-heading">Public state</h2>
-        <dl class="facts">
-          <div>
-            <dt>Session</dt>
-            <dd id="state-session">No session</dd>
+        <div class="sidebar-footer">
+          <div class="server-mini" id="server-mini" data-state="checking"><span class="status-pixel" aria-hidden="true"></span><span class="sidebar-only" id="server-mini-text" data-i18n="backend.checking">Проверяем сервер…</span></div>
+          <div class="language-switch" aria-label="Language">
+            <button class="language-button is-active" type="button" data-language="ru" aria-pressed="true">RU</button><span aria-hidden="true">/</span><button class="language-button" type="button" data-language="en" aria-pressed="false">EN</button>
           </div>
-          <div>
-            <dt>Location</dt>
-            <dd id="state-location">Unknown</dd>
-          </div>
-        </dl>
-        <div id="sheets"></div>
-      </section>
-    </main>
+        </div>
+      </aside>
 
+      <button class="sidebar-backdrop" id="sidebar-backdrop" type="button" aria-label="Закрыть меню" data-i18n-aria-label="nav.close"></button>
+
+      <main class="main-stage">
+        <header class="stage-header">
+          <button class="icon-button mobile-menu" id="mobile-menu" type="button" aria-controls="sidebar" aria-expanded="false"><span aria-hidden="true">☰</span><span class="sr-only" data-i18n="nav.open">Открыть меню</span></button>
+          <div><p class="kicker" data-i18n="header.kicker">ПРИКЛЮЧЕНИЕ ЖДЁТ</p><h1 id="section-title">Игра</h1><p class="section-description" id="section-description">Выберите героя и опишите его следующий шаг.</p></div>
+          <div class="session-chip" id="session-chip"><span class="session-chip-label" data-i18n="session.current">Текущая сессия</span><strong id="session-chip-value" data-i18n="session.none">Не выбрана</strong></div>
+        </header>
+
+        <div class="offline-banner" id="offline-banner" hidden>
+          <span class="pixel-alert" aria-hidden="true">!</span>
+          <div><strong data-i18n="offline.title">Сервер недоступен — включён режим просмотра</strong><p data-i18n="offline.body">Сохранённые данные можно посмотреть, но изменить их получится после запуска Backend.</p></div>
+          <button class="secondary-button" id="global-retry" type="button" data-i18n="backend.retry">Проверить снова</button>
+        </div>
+
+        <section class="view is-active" id="view-game" data-view="game" aria-labelledby="section-title">
+          <div class="game-layout">
+            <article class="pixel-panel story-panel">
+              <div class="panel-heading"><div><p class="panel-eyebrow" data-i18n="game.storyEyebrow">ЛЕТОПИСЬ</p><h2 data-i18n="game.storyTitle">История приключения</h2></div><span class="turn-badge" id="turn-badge">0</span></div>
+              <ol id="log" class="story-log" aria-live="polite"></ol>
+              <form id="action-form" class="action-console">
+                <label><span data-i18n="game.actor">Кто действует</span><select id="acting-character" name="acting-character" required></select></label>
+                <label><span data-i18n="game.action">Действие героя</span><textarea id="action-text" name="action-text" rows="3" maxlength="500" required data-i18n-placeholder="game.actionPlaceholder" placeholder="Что делает ваш герой?"></textarea></label>
+                <div class="console-footer"><p class="context-hint" id="action-hint" data-i18n="game.localHint">Пока AI-мастер не подключён, действие сохранится только в журнале этой вкладки.</p><button class="primary-button command-button" type="submit"><span class="command-soul" aria-hidden="true">♥</span><span data-i18n="game.send">Отправить действие</span></button></div>
+              </form>
+            </article>
+            <aside class="pixel-panel party-panel"><div class="panel-heading compact"><div><p class="panel-eyebrow" data-i18n="game.partyEyebrow">ОТРЯД</p><h2 data-i18n="game.partyTitle">Активный герой</h2></div></div><div id="active-hero"></div></aside>
+          </div>
+        </section>
+
+        <section class="view" id="view-characters" data-view="characters" hidden aria-labelledby="section-title">
+          <div class="section-grid">
+            <article class="pixel-panel wide-panel">
+              <div class="panel-heading"><div><p class="panel-eyebrow" data-i18n="characters.rosterEyebrow">ОТРЯД</p><h2 data-i18n="characters.rosterTitle">Герои сессии</h2><p class="panel-copy" data-i18n="characters.rosterBody">Здесь видно здоровье, сильные стороны и снаряжение каждого участника.</p></div><span class="count-badge" id="character-count">0</span></div>
+              <div class="character-grid" id="character-grid"></div>
+            </article>
+            <article class="pixel-panel form-panel">
+              <p class="panel-eyebrow" data-i18n="characters.createEyebrow">НОВЫЙ ПУТНИК</p><h2 data-i18n="characters.createTitle">Создать героя</h2><p class="panel-copy" data-i18n="characters.createBody">Дайте герою имя, коротко опишите его роль и укажите стартовые параметры.</p>
+              <form id="character-form" class="stack-form">
+                <label><span data-i18n="characters.name">Имя</span><input id="character-name" name="character-name" type="text" maxlength="60" required data-i18n-placeholder="characters.namePlaceholder" placeholder="Например, Элиас"></label>
+                <label><span data-i18n="characters.concept">Кто этот герой</span><input id="character-concept" name="character-concept" type="text" maxlength="120" data-i18n-placeholder="characters.conceptPlaceholder" placeholder="Плут, лесной следопыт, боевой маг…"></label>
+                <label><span data-i18n="characters.hp">Максимум здоровья</span><input id="character-hp" name="character-hp" type="number" min="1" max="999" value="10" required></label>
+                <fieldset><legend data-i18n="characters.stats">Характеристики</legend><div id="stat-rows" class="stat-rows"></div><button id="add-stat" class="text-button" type="button" data-i18n="characters.addStat">+ Добавить характеристику</button></fieldset>
+                <label><span data-i18n="characters.item">Стартовый предмет</span><input id="starting-item" name="starting-item" type="text" maxlength="60" data-i18n-placeholder="characters.itemPlaceholder" placeholder="Например, кинжал"></label>
+                <p class="form-message" id="character-message" role="status"></p><button class="primary-button" type="submit" data-i18n="characters.create">Добавить героя</button>
+              </form>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="view-world" data-view="world" hidden aria-labelledby="section-title">
+          <div class="world-grid">
+            <article class="pixel-panel world-card location-card"><p class="panel-eyebrow" data-i18n="world.locationEyebrow">ТЕКУЩАЯ ТОЧКА</p><h2 id="world-location" data-i18n="world.unknown">Неизвестная локация</h2><p data-i18n="world.locationBody">Локация обновится, когда Backend начнёт возвращать публичное состояние игрового мира.</p><div class="map-rune" aria-hidden="true">✦</div></article>
+            <article class="pixel-panel world-card"><p class="panel-eyebrow" data-i18n="world.sessionEyebrow">СЕССИЯ</p><h2 id="world-session-name" data-i18n="session.none">Не выбрана</h2><dl class="world-facts"><div><dt>ID</dt><dd id="world-session-id">—</dd></div><div><dt data-i18n="world.heroes">Героев</dt><dd id="world-character-count">0</dd></div><div><dt data-i18n="world.records">Записей</dt><dd id="world-log-count">0</dd></div></dl></article>
+            <article class="pixel-panel world-card party-world-card"><p class="panel-eyebrow" data-i18n="world.partyEyebrow">СОСТОЯНИЕ ОТРЯДА</p><h2 data-i18n="world.partyTitle">Герои в пути</h2><div id="world-party"></div></article>
+          </div>
+        </section>
+
+        <section class="view" id="view-session" data-view="session" hidden aria-labelledby="section-title">
+          <div class="section-grid">
+            <article class="pixel-panel connection-panel"><p class="panel-eyebrow" data-i18n="session.connectionEyebrow">СВЯЗЬ</p><h2 data-i18n="session.connectionTitle">Backend</h2><div class="connection-state" id="connection-state" data-state="checking"><span class="status-orb" aria-hidden="true"></span><div><strong id="health-status" data-i18n="backend.checking">Проверяем сервер…</strong><p id="health-description" data-i18n="backend.checkingBody">Это займёт всего несколько секунд.</p></div></div><button class="secondary-button" id="recheck-health" type="button" data-i18n="backend.retry">Проверить снова</button></article>
+            <article class="pixel-panel form-panel">
+              <p class="panel-eyebrow" data-i18n="session.newEyebrow">НОВАЯ ИСТОРИЯ</p><h2 data-i18n="session.newTitle">Создать сессию</h2><p class="panel-copy" data-i18n="session.newBody">Название поможет быстро узнать эту игру среди других приключений.</p>
+              <form id="create-session-form" class="stack-form"><label><span data-i18n="session.name">Название приключения</span><input id="session-name" name="session-name" type="text" maxlength="80" required data-i18n-placeholder="session.namePlaceholder" placeholder="Тайна затонувшего храма"></label><button class="primary-button" type="submit" data-i18n="session.create">Создать на сервере</button></form>
+              <div class="form-divider"><span data-i18n="common.or">или</span></div>
+              <form id="join-session-form" class="stack-form"><label><span data-i18n="session.code">Код сессии</span><input id="join-session-id" name="join-session-id" type="text" maxlength="80" required data-i18n-placeholder="session.codePlaceholder" placeholder="Вставьте ID сессии"></label><button class="secondary-button" type="submit" data-i18n="session.join">Сохранить код</button><p class="context-hint" data-i18n="session.joinHint">Backend пока не умеет проверять этот код. Сессия будет отмечена как непроверенная.</p></form>
+              <p class="form-message" id="session-result" role="status"></p>
+            </article>
+            <article class="pixel-panel wide-panel saved-sessions-panel"><div class="panel-heading compact"><div><p class="panel-eyebrow" data-i18n="session.savedEyebrow">СОХРАНЕНО В ЭТОЙ ВКЛАДКЕ</p><h2 data-i18n="session.savedTitle">Ваши сессии</h2></div></div><div id="session-list" class="session-list"></div></article>
+          </div>
+        </section>
+      </main>
+    </div>
     <script type="module" src="js/app.js"></script>
   </body>
 </html>
