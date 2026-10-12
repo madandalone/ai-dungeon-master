@@ -12,125 +12,92 @@ The FastAPI prototype is currently on the separate
 
 ### Purpose
 
-The Frontend is a browser-only shell for trying the initial session,
-character, chat, and public-state user flows. It uses HTML, CSS, and vanilla
-JavaScript modules. It has no build step and contains no Game Engine business
-logic.
+The Frontend is a responsive browser shell for sessions, browser-local heroes,
+the adventure log, and a projected world summary. It uses HTML, CSS, and
+vanilla JavaScript modules, has no build step, and contains no Game Engine
+business logic.
 
-The header explicitly identifies the displayed data as a local cache rather
-than authoritative game state.
+The visual language is an original colour pixel-fantasy theme. It uses crisp
+CSS and inline SVG shapes; no game-specific third-party artwork is bundled.
 
-### File structure
+### Navigation and language
 
-- `frontend/index.html` defines the three-column page and its forms.
-- `frontend/styles.css` provides the dark responsive layout. The three columns
-  collapse into one column below 900 px.
-- `frontend/js/api.js` contains the two implemented HTTP calls and fixes the
-  Backend base URL at `http://127.0.0.1:8000`.
-- `frontend/js/state.js` defines and normalizes the local public-state shape
-  and stores it in `sessionStorage`.
-- `frontend/js/app.js` owns DOM rendering and form event handlers.
+The application is split into four sections: **Game**, **Heroes**, **World**,
+and **Session**. A desktop sidebar can collapse to icons. Below 760 px it
+becomes an overlay drawer. The active section and collapsed state are saved as
+UI preferences.
 
-### Implemented screen
-
-The single page has three areas:
-
-1. **Session and character controls**
-   - checks Backend health;
-   - retries the health check;
-   - creates a session through the Backend;
-   - accepts a session ID for an unverified local connection;
-   - creates a browser-local character with name, concept, HP, arbitrary
-     integer stats, and one optional starting item.
-2. **Play**
-   - selects a browser-local character;
-   - records the player's text in the local log;
-   - appends the fixed placeholder `Dungeon Master is not connected yet.`;
-   - does not submit the action to a Backend or Engine.
-3. **Public state**
-   - displays session name and ID;
-   - displays location;
-   - displays character concept, HP, stats, and inventory.
+All static and runtime UI messages are available in Russian and English through
+`frontend/js/i18n.js`. Russian is the default. The language selector persists
+its choice and updates the document language and accessible labels.
 
 ### Frontend state
 
-`frontend/js/state.js` uses the storage key
-`ai-dungeon-master.public-cache`. The normalized cache shape is:
+`frontend/js/state.js` stores a versioned envelope under
+`ai-dungeon-master.session-cache.v2`:
 
 ```text
-session_id: string
-session_name: string
-location: string
-characters:
-  - id: string
-  - name: string
-  - concept: string
-  - hp: number
-  - max_hp: number
-  - stats: object of numeric values
-  - inventory:
-      - item_id: string
-      - name: string
-      - quantity: number
-log:
-  - kind: "player" | "master"
-  - character_id: string
-  - text: string
+version: 2
+activeSessionId: string | null
+sessions:
+  <session-id>:
+    connection: "server" | "unverified" | "legacy"
+    session_id: string
+    session_name: string
+    location: string
+    characters: Character[]
+    log: LogEntry[]
 ```
 
-Loading malformed JSON falls back to an empty cache. Normalization copies only
-the listed fields. The cache is saved during every render.
+Each session has independent heroes, world state, and log entries. The previous
+`ai-dungeon-master.public-cache` value is migrated once. Existing data without
+a session ID remains visible as the read-only `legacy-local` session.
 
-The current character IDs use the browser-local format
-`local-character-<number>`. A starting item's text is used as both its
-`item_id` and display `name`. These are development conventions, not Backend
-contracts.
+Loading malformed data falls back to an empty store. Normalization copies only
+allowlisted public fields. Character IDs are generated with
+`crypto.randomUUID()` when available. A starting item's text remains both its
+local ID and display name until an item catalogue exists.
+
+### Implemented experience
+
+- **Game** shows the local chronicle, acting hero selector, action composer,
+  and the active hero HUD.
+- **Heroes** creates browser-local characters and renders cards with an
+  automatically selected archetype icon, accessible HP progress, stats, and
+  inventory.
+- **World** summarizes the current location, session, party, and log size.
+- **Session** checks Backend health, creates a session, stores an unverified
+  session code, and switches between locally cached sessions.
+
+When the Backend is unavailable, the application enters an explicit read-only
+mode: saved data and navigation remain available, while mutation forms are
+disabled with an actionable explanation.
 
 ### Current Backend API usage
 
-`frontend/js/api.js` implements:
+The API base follows the Frontend hostname on port 8000. The client implements:
 
-- `GET http://127.0.0.1:8000/health`
-  - considered healthy only when the response is successful and exactly
-    contains `status: "ok"`;
-  - otherwise displays `Backend unavailable`.
-- `POST http://127.0.0.1:8000/sessions`
-  - sends `{ "name": string }`;
-  - expects `{ "id": string, "name": string }`;
-  - stores the returned values in the local public cache.
+- `GET /health`, healthy only for a successful `{ "status": "ok" }` response;
+- `POST /sessions` with `{ "name": string }`, expecting string `id` and `name`.
 
-These shapes match the FastAPI prototype on
-`origin/feature/backend-setup`. That prototype stores sessions in an in-memory
-dictionary and creates IDs with `uuid4()`.
+The current Backend does not allow browser CORS requests. CORS configuration is
+a Backend responsibility and must be added before its healthy state is visible
+from a separately served Frontend.
 
-The prototype currently has no CORS middleware. Therefore, when the Frontend
-is served from a different origin, a normal browser cannot call it even though
-the request and response shapes match.
+Joining by session ID is not verified because no lookup endpoint exists.
+Characters, actions, narration placeholders, and per-session progress remain
+browser-local. The location remains unknown until a public-state endpoint is
+implemented.
 
-The “Use session id” form does not call the Backend. Its UI states that the ID
-is only cached and has not been confirmed.
+### Tests and intentional limits
 
-### Placeholders
+`npm run test:frontend` uses Node's built-in test runner and covers translation
+parity, session migration and isolation, API response validation, archetype
+selection, and HP thresholds.
 
-- The Dungeon Master response is fixed UI text.
-- Character creation is browser-local because there is no character endpoint.
-- Joining by session ID is browser-local because there is no session lookup or
-  join endpoint.
-- Actions and the chat log stay in `sessionStorage`.
-- The location remains empty/unknown unless a future Backend public-state
-  response supplies it.
-
-### Intentionally not implemented
-
-- Backend action or turn requests;
-- Engine execution in the browser;
-- AI or generated narration;
-- authentication or player identity;
-- authoritative character creation;
-- session lookup or membership;
-- persistence beyond one browser tab/session;
-- reconnect, synchronization, conflict handling, or multiplayer updates;
-- frontend automated tests.
+The Frontend intentionally does not implement turn requests, Engine execution,
+generated narration, authoritative character creation, authentication,
+cross-device persistence, synchronization, or multiplayer updates.
 
 ## Game Engine
 
