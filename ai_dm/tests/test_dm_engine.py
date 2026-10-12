@@ -36,7 +36,7 @@ TURN = {
 CAMPAIGN = {
     "campaign_title": "Крипта",
     "hidden_plot": "Страж охраняет ключ.",
-    "starting_location": "crypt",
+    "starting_location": "Крипта",
     "room_context": "Каменный зал.",
     "intro_narrative": "Вы входите в крипту.",
 }
