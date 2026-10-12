@@ -9,10 +9,19 @@ __pycache__/
 # Tests
 .pytest_cache/
 .coverage
+coverage/
+test-results/
+playwright-report/
 
 # Linters
 .ruff_cache/
 .mypy_cache/
+
+# Frontend tooling
+node_modules/
+frontend/.cache/
+npm-debug.log*
+yarn-error.log*
 
 # IDE
 .vscode/
