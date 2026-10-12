@@ -1,24 +1,26 @@
 # Rules Service
 
 Пакет `rules_service/` даёт Dungeon Master текст правил, относящихся к действию игрока.
-Есть две реализации с одинаковым интерфейсом:
+Есть три реализации с одинаковым интерфейсом:
 
 | Реализация | Класс | Как ищет | Зависимости |
 |---|---|---|---|
 | v1: ключевые слова | `RulesService` | TF-IDF по точным словам | stdlib |
 | v2: RAG | `RagRulesService` | косинусное сходство эмбеддингов | `numpy`, `sentence-transformers` |
+| v3: гибрид | `HybridRulesService` | RRF-ранжирование объединяет v1 и v2 | `numpy`, `sentence-transformers` |
 
 ## Интерфейс (общий)
 
 ```python
-from rules_service import RulesService, RagRulesService
+from rules_service import HybridRulesService, RagRulesService, RulesService
 from rules_service.embedder import SentenceTransformerEmbedder
 
 keyword = RulesService.from_file("data/srd.md")
 rag = RagRulesService.from_file("data/srd.md", SentenceTransformerEmbedder(), cache_dir=".rules_index")
+hybrid = HybridRulesService(keyword, rag)
 
-rag.get_rules("Я хочу перепрыгнуть через пропасть", top_k=3, max_chars=4000)  # -> str
-rag.search("jump over a chasm", top_k=3, min_score=0.0)                        # -> list[RuleChunk]
+hybrid.get_rules("Я хочу перепрыгнуть через пропасть", top_k=3, max_chars=4000)  # -> str
+hybrid.search("1d6 bludgeoning damage", top_k=3)                                 # -> list[RuleChunk]
 ```
 
 - Вход: книга правил (`.md`, `.txt`, `.pdf` - для PDF нужен `pypdf`) и текстовый запрос
@@ -64,24 +66,45 @@ TF-IDF: частота слова во фрагменте (заголовок у
   реальной модели нужно подбирать по данным; пока он нужен, чтобы при нерелевантном запросе DM не
   получал случайные правила.
 
+## v3: гибридный поиск (keyword + RAG)
+
+`HybridRulesService(keyword, rag)` объединяет оба подхода через RRF (Reciprocal Rank Fusion):
+для каждого фрагмента суммируются `1 / (k + rank)` из обоих ранжировщиков, результат сортируется
+по итоговой сумме. `k=60` по умолчанию; при больших `k` разница между близкими рангами
+сглаживается, при меньших - резко штрафуются низкие позиции.
+
+Зачем нужен: RAG хорошо ищет по смыслу и на другом языке, но плохо по редким точным терминам
+(«1d6», название заклинания, индекс монстра). Keyword наоборот: находит точные слова, но не понимает
+перефраз и языков. Гибрид не требует обучения весов и работает сразу.
+
+```python
+from rules_service import HybridRulesService, RagRulesService, RulesService
+from rules_service.embedder import SentenceTransformerEmbedder
+
+keyword = RulesService.from_file("data/srd.md")
+rag = RagRulesService.from_file("data/srd.md", SentenceTransformerEmbedder(), cache_dir=".rules_index")
+hybrid = HybridRulesService(keyword, rag)
+```
+
 ## Что проверено автоматически
 
-`python -m unittest discover -s rules_service/tests -t .` - 13 тестов:
+`python -m unittest discover -s rules_service/tests -t .` - 18 тестов:
 - v1: разбиение, ранжирование, пустой результат, лимиты `get_rules`;
 - v2: русский запрос находит английский фрагмент там, где v1 возвращает пусто; ранжирование по смыслу;
   `min_score`; лимиты; пустой запрос и пустая книга; кэш (не пересчитывается, инвалидируется при смене книги);
+- v3: гибрид находит и точные термины (`1d6`), и русские парафразы (`перепрыгнуть`);
 - чанкинг: путь заголовков, ограничение длины для огромного абзаца.
 
 Тесты используют тестовый эмбеддер `ConceptEmbedder` (слова одного смысла - одно измерение): он проверяет
-логику поиска, кэша и интеграции, а не качество реальной модели. Тест `integration/tests` показывает
+логику поиска, кэша, интеграции и RRF, а не качество реальной модели. Тест `integration/tests` показывает
 подмену v1 на v2 внутри `TurnOrchestrator`.
 
 ## Известные ограничения
 
 - Качество поиска на реальной книге зависит от выбранной модели и порога `min_score`; для их выбора
   нужен размеченный набор "запрос -> правильный раздел SRD" и сравнение метрик (recall@k).
-- Только плотный поиск: редкие точные термины (названия заклинаний, "1d6") могут находиться хуже, чем
-  в TF-IDF. Возможное развитие - гибридный поиск (объединение рейтингов v1 и v2).
+- RRF без обучения весов не гарантирует, что keyword всегда победит RAG для точных терминов; для
+  критичных случаев можно добавить пост-фильтр по exact match или регулируемые веса.
 - Модель скачивается при первом запуске (около 470 МБ) и требует сети один раз.
 - Индекс строится синхронно при старте сервиса (на CPU для SRD это минуты, дальше берётся из кэша).
 - Нет обновления индекса на лету: при смене книги пересчитывается всё.
