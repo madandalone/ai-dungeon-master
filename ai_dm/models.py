@@ -13,11 +13,20 @@ class GameState(BaseModel):
     active_characters: List[CharacterState]
     room_context: str
 
+class TurnHistoryEntry(BaseModel):
+    """Один принятый ход; dm_notes доступны только мастеру."""
+
+    player_action: str
+    narrative: str
+    dm_notes: str = ""
+
+
 class TurnRequest(BaseModel):
     rules_summary: str        # Краткие правила игры
     hidden_plot: str          # Скрытый сюжет (видит только Мастер)
     game_state: GameState     # Текущее состояние мира и героев
     player_action: str        # Текст действия игрока
+    history: List[TurnHistoryEntry] = Field(default_factory=list)
 
 
 # --- Структурированный ответ от AI Dungeon Master ---
