@@ -3,3 +3,4 @@ uvicorn
 pypdf
 numpy
 sentence-transformers
+httpx2

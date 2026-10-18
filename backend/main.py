@@ -11,7 +11,10 @@ from engine.models import Character, GameState, PlayerAction
 from integration import IntegrationError, TurnOrchestrator
 from ai_dm.models import StateDelta, TurnRequest, TurnResponse
 from fastapi.middleware.cors import CORSMiddleware
+from ai_dm.models import TurnHistoryEntry
+
 app = FastAPI(title="AI Dungeon Master API")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5500", "http://localhost:5500"],
@@ -40,9 +43,6 @@ class PlayerTurnRequest(BaseModel):
     text: str
 
 
-sessions: dict[str, GameSession] = {}
-game_states: dict[str, GameState] = {}
-
 class FakeRulesProvider:
     def get_rules(self, query: str) -> str:
         return "Test rule: the hero loses 1 HP."
@@ -63,6 +63,11 @@ class FakeDungeonMaster:
             new_location=None,
             dm_thoughts="Test turn processed.",
         )
+
+
+sessions: dict[str, GameSession] = {}
+game_states: dict[str, GameState] = {}
+game_histories: dict[str, list[TurnHistoryEntry]] = {}
 
 
 @app.get("/health")
@@ -99,7 +104,7 @@ def create_session(session_data: GameSessionCreate):
         characters=characters,
         world_flags={},
     )
-
+    game_histories[session.id] = []
     return session
 
 
@@ -187,13 +192,22 @@ def process_turn(session_id: str, turn_data: PlayerTurnRequest):
             action=action,
             hidden_plot="Test campaign",
             dice=Dice(LocalRandomSource()),
+            history=game_histories[session_id],
         )
+
     except IntegrationError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     if outcome.accepted:
         game_states[session_id] = outcome.state
 
+        game_histories[session_id].append(
+            TurnHistoryEntry(
+                player_action=turn_data.text,
+                narrative=outcome.narration or "",
+                dm_notes=outcome.dm_notes or "",
+            )
+        )
     return {
         "accepted": outcome.accepted,
         "narration": outcome.narration,
