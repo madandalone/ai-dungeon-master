@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#000000">
     <title>AI Dungeon Master</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=20261020-3">
   </head>
   <body>
     <div class="app-shell" id="app-shell">
@@ -41,8 +41,13 @@
         <header class="stage-header">
           <button class="icon-button mobile-menu" id="mobile-menu" type="button" aria-controls="sidebar" aria-expanded="false"><span aria-hidden="true">☰</span><span class="sr-only" data-i18n="nav.open">Открыть меню</span></button>
           <div><p class="kicker" data-i18n="header.kicker">ПРИКЛЮЧЕНИЕ ЖДЁТ</p><h1 id="section-title">Игра</h1><p class="section-description" id="section-description">Выберите героя и опишите его следующий шаг.</p></div>
-          <div class="session-chip" id="session-chip"><span class="session-chip-label" data-i18n="session.current">Текущая сессия</span><strong id="session-chip-value" data-i18n="session.none">Не выбрана</strong></div>
         </header>
+
+        <section class="adventure-hud" aria-label="Текущий игровой контекст" data-i18n-aria-label="context.aria">
+          <div class="hud-cell"><span class="hud-label" data-i18n="context.session">Сессия</span><strong class="hud-value" id="hud-session">Не выбрана</strong></div>
+          <div class="hud-cell hud-hero"><span class="hud-label" data-i18n="context.hero">Ваш герой</span><strong class="hud-value" id="hud-hero">Не выбран</strong><span class="hud-hp" id="hud-hero-hp"></span></div>
+          <div class="hud-cell hud-event"><span class="hud-label" data-i18n="context.lastEvent">Последнее событие</span><span class="hud-value" id="hud-event" aria-live="polite">История ещё не началась</span></div>
+        </section>
 
         <div class="offline-banner" id="offline-banner" hidden>
           <span class="pixel-alert" aria-hidden="true">!</span>
@@ -58,7 +63,8 @@
               <form id="action-form" class="action-console">
                 <label><span data-i18n="game.actor">Кто действует</span><select id="acting-character" name="acting-character" required></select></label>
                 <label><span data-i18n="game.action">Действие героя</span><textarea id="action-text" name="action-text" rows="3" maxlength="500" required data-i18n-placeholder="game.actionPlaceholder" placeholder="Что делает ваш герой?"></textarea></label>
-                <div class="console-footer"><p class="context-hint" id="action-hint" data-i18n="game.localHint">Пока AI-мастер не подключён, действие сохранится только в журнале этой вкладки.</p><button class="primary-button command-button" type="submit"><span class="command-soul" aria-hidden="true">♥</span><span data-i18n="game.send">Отправить действие</span></button></div>
+                <div class="console-footer"><p class="context-hint" id="action-hint" data-i18n="game.readyHint">Ход обработают Мастер, правила и игровой движок.</p><button class="primary-button command-button" id="action-submit" type="submit"><span class="command-soul" aria-hidden="true">♥</span><span id="action-submit-label" data-i18n="game.send">Отправить действие</span></button></div>
+                <p class="turn-status" id="action-status" role="status" aria-live="polite" hidden></p>
               </form>
             </article>
             <aside class="pixel-panel party-panel"><div class="panel-heading compact"><div><p class="panel-eyebrow" data-i18n="game.partyEyebrow">ОТРЯД</p><h2 data-i18n="game.partyTitle">Активный герой</h2></div></div><div id="active-hero"></div></aside>
@@ -72,7 +78,7 @@
               <div class="character-grid" id="character-grid"></div>
             </article>
             <article class="pixel-panel form-panel">
-              <p class="panel-eyebrow" data-i18n="characters.createEyebrow">НОВЫЙ ПУТНИК</p><h2 data-i18n="characters.createTitle">Создать героя</h2><p class="panel-copy" data-i18n="characters.createBody">Дайте герою имя, коротко опишите его роль и укажите стартовые параметры.</p>
+              <p class="panel-eyebrow" data-i18n="characters.createEyebrow">НОВЫЙ ПУТНИК</p><h2 data-i18n="characters.createTitle">Создать героя</h2><p class="panel-copy" data-i18n="characters.createBody">Дайте герою имя, коротко опишите его роль и укажите стартовые параметры.</p><p class="server-form-notice" id="character-form-notice" role="status"></p>
               <form id="character-form" class="stack-form">
                 <label><span data-i18n="characters.name">Имя</span><input id="character-name" name="character-name" type="text" maxlength="60" required data-i18n-placeholder="characters.namePlaceholder" placeholder="Например, Элиас"></label>
                 <label><span data-i18n="characters.concept">Кто этот герой</span><input id="character-concept" name="character-concept" type="text" maxlength="120" data-i18n-placeholder="characters.conceptPlaceholder" placeholder="Плут, лесной следопыт, боевой маг…"></label>
@@ -87,7 +93,7 @@
 
         <section class="view" id="view-world" data-view="world" hidden aria-labelledby="section-title">
           <div class="world-grid">
-            <article class="pixel-panel world-card location-card"><p class="panel-eyebrow" data-i18n="world.locationEyebrow">ТЕКУЩАЯ ТОЧКА</p><h2 id="world-location" data-i18n="world.unknown">Неизвестная локация</h2><p data-i18n="world.locationBody">Локация обновится, когда Backend начнёт возвращать публичное состояние игрового мира.</p><div class="map-rune" aria-hidden="true">✦</div></article>
+            <article class="pixel-panel world-card location-card"><p class="panel-eyebrow" data-i18n="world.locationEyebrow">ТЕКУЩАЯ ТОЧКА</p><h2 id="world-location" data-i18n="world.unknown">Неизвестная локация</h2><p data-i18n="world.locationBody">Локация обновляется после каждого принятого хода.</p><div class="map-rune" aria-hidden="true">✦</div></article>
             <article class="pixel-panel world-card"><p class="panel-eyebrow" data-i18n="world.sessionEyebrow">СЕССИЯ</p><h2 id="world-session-name" data-i18n="session.none">Не выбрана</h2><dl class="world-facts"><div><dt>ID</dt><dd id="world-session-id">—</dd></div><div><dt data-i18n="world.heroes">Героев</dt><dd id="world-character-count">0</dd></div><div><dt data-i18n="world.records">Записей</dt><dd id="world-log-count">0</dd></div></dl></article>
             <article class="pixel-panel world-card party-world-card"><p class="panel-eyebrow" data-i18n="world.partyEyebrow">СОСТОЯНИЕ ОТРЯДА</p><h2 data-i18n="world.partyTitle">Герои в пути</h2><div id="world-party"></div></article>
           </div>
@@ -102,6 +108,15 @@
               <div class="form-divider"><span data-i18n="common.or">или</span></div>
               <form id="join-session-form" class="stack-form"><label><span data-i18n="session.code">Код сессии</span><input id="join-session-id" name="join-session-id" type="text" maxlength="80" required data-i18n-placeholder="session.codePlaceholder" placeholder="Вставьте ID сессии"></label><button class="secondary-button" type="submit" data-i18n="session.join">Сохранить код</button><p class="context-hint" data-i18n="session.joinHint">Backend пока не умеет проверять этот код. Сессия будет отмечена как непроверенная.</p></form>
               <p class="form-message" id="session-result" role="status"></p>
+            </article>
+            <article class="pixel-panel integration-panel">
+              <div class="panel-heading compact"><div><p class="panel-eyebrow" data-i18n="services.eyebrow">ИНТЕГРАЦИЯ</p><h2 data-i18n="services.title">Готовность модулей</h2><p class="panel-copy" data-i18n="services.body">Показывает только статусы, которые подтвердил Backend. «Нет данных» не означает ошибку.</p></div></div>
+              <div class="service-grid" id="service-grid" aria-live="polite">
+                <article class="service-card" data-service="backend"><span class="service-pixel" aria-hidden="true"></span><div><strong data-i18n="services.backend">Backend API</strong><p data-i18n="services.backendBody">Сессии, состояние и отправка ходов.</p></div><span class="service-state"></span></article>
+                <article class="service-card" data-service="dm"><span class="service-pixel" aria-hidden="true"></span><div><strong data-i18n="services.dm">AI Master</strong><p data-i18n="services.dmBody">Повествование и последствия действия.</p></div><span class="service-state"></span></article>
+                <article class="service-card" data-service="rules"><span class="service-pixel" aria-hidden="true"></span><div><strong data-i18n="services.rules">Rules Service</strong><p data-i18n="services.rulesBody">Поиск подходящих правил для хода.</p></div><span class="service-state"></span></article>
+                <article class="service-card" data-service="history"><span class="service-pixel" aria-hidden="true"></span><div><strong data-i18n="services.history">Публичная история</strong><p data-i18n="services.historyBody">Летопись без приватных заметок Мастера.</p></div><span class="service-state"></span></article>
+              </div>
             </article>
             <article class="pixel-panel wide-panel saved-sessions-panel"><div class="panel-heading compact"><div><p class="panel-eyebrow" data-i18n="session.savedEyebrow">СОХРАНЕНО В ЭТОЙ ВКЛАДКЕ</p><h2 data-i18n="session.savedTitle">Ваши сессии</h2></div></div><div id="session-list" class="session-list"></div></article>
           </div>
