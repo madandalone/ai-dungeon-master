@@ -2,6 +2,7 @@ import json
 import math
 import os
 import re
+import time
 from collections.abc import Callable, Sequence
 from typing import TypeVar
 
@@ -12,13 +13,14 @@ from pydantic import BaseModel, ValidationError
 
 from ai_dm.context import GenerationLimits, fit_messages
 from ai_dm.dnd_api import DnD5eClient
-from ai_dm.errors import ConfigurationError, InvalidResponseError, ProviderError
+from ai_dm.errors import ConfigurationError, InvalidResponseError
 from ai_dm.models import (
     CampaignStartRequest,
     CampaignStartResponse,
     TurnRequest,
     TurnResponse,
 )
+from ai_dm.provider import RetryPolicy, provider_error, without_sdk_retries
 
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
 HISTORY_LIMIT = 10
@@ -108,8 +110,8 @@ def _language_errors(fields: dict[str, str], references: Sequence[str] = ()) -> 
 class AIDungeonMaster:
     """Stateless game logic with a lazy, reusable LLM client.
 
-    A supplied client belongs to the caller, including its timeout/retry policy.
-    The default client uses AI_DM_TIMEOUT_SECONDS and disables SDK retries.
+    A supplied client belongs to the caller, including its timeout and transport.
+    SDK retries are disabled; one provider retry and one response repair are allowed.
     """
 
     def __init__(self, client: OpenAI | None = None):
@@ -128,11 +130,14 @@ class AIDungeonMaster:
         *,
         history_count: int = 0,
     ) -> ResponseModel:
-        client = self._get_client()
+        client = without_sdk_retries(self._get_client())
         limits = GenerationLimits.from_env()
+        retry_policy = RetryPolicy.from_env()
         model = os.getenv("MODEL_NAME", "Qwen/Qwen3.8-27B")
         schema = json.dumps(response_model.model_json_schema(), ensure_ascii=False, indent=2)
         repair_messages = []
+        provider_retry_used = False
+        repair_used = False
 
         def build_messages(count: int) -> list[dict[str, str]]:
             text = prompt(count) if callable(prompt) else prompt
@@ -142,9 +147,9 @@ class AIDungeonMaster:
                 *repair_messages,
             ]
 
-        for attempt in range(2):
+        for attempt in range(3):
             messages, history_count = fit_messages(
-                build_messages, history_count, limits.max_context_chars, repair=attempt > 0,
+                build_messages, history_count, limits.max_context_chars, repair=repair_used,
             )
             try:
                 response = client.chat.completions.create(
@@ -154,8 +159,13 @@ class AIDungeonMaster:
                     max_tokens=limits.max_output_tokens,
                 )
             except (APIError, httpx.HTTPError, TimeoutError, ConnectionError) as exc:
-                # Do not include provider payloads or private prompts in the public message.
-                raise ProviderError("Dungeon Master provider request failed.") from exc
+                error = provider_error(exc)
+                delay = retry_policy.delay_for(error)
+                if not provider_retry_used and attempt < 2 and delay is not None:
+                    provider_retry_used = True
+                    time.sleep(delay)
+                    continue
+                raise error from exc
 
             raw = None
             try:
@@ -167,10 +177,11 @@ class AIDungeonMaster:
                     validate_response(result)
                 return result
             except ValueError as exc:
-                if attempt == 1:
+                if repair_used or attempt == 2:
                     raise InvalidResponseError(
                         "Dungeon Master returned an invalid response after one repair attempt."
                     ) from exc
+                repair_used = True
                 details = (
                     json.dumps(exc.errors(include_input=False, include_url=False), ensure_ascii=False)
                     if isinstance(exc, ValidationError)

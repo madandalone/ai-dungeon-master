@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from ai_dm.dm_engine import AIDungeonMaster
-from ai_dm.errors import AIDMError
+from ai_dm.errors import AIDMError, ProviderError
 from ai_dm.models import CampaignStartRequest, CharacterState, TurnHistoryEntry, TurnRequest, TurnResponse
 from engine.dice import Dice, LocalRandomSource
 from engine.models import Character, GameState, InventoryItem, PlayerAction
@@ -131,7 +131,8 @@ def run():
         try:
             outcome = session.play_turn(action, dm, rules, dice)
         except IntegrationError as exc:
-            print(f"Ход не выполнен: {exc}")
+            error = exc.__cause__ if isinstance(exc.__cause__, ProviderError) else exc
+            print(f"Ход не выполнен: {error}")
             continue
         if not outcome.accepted:
             print("Ход отклонён: " + ", ".join(error.code for error in outcome.errors))
