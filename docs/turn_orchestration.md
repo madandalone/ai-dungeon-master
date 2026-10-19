@@ -2,7 +2,8 @@
 
 Пакет `integration/` реализует игровой ход из `docs/integration.md`
 (раздел "Target flow") как чистую функцию без HTTP, БД и сети.
-Backend вызывает её из будущего `POST /turns`.
+Backend вызывает её из `POST /sessions/{id}/turns` (реализован в ветке Натальи
+`feature/backend-turn-orchestration`, пока с заглушками DM и правил - см. раздел "Сборка компонентов").
 
 ```text
 PlayerAction + GameState + history (из хранилища Backend)
@@ -12,7 +13,7 @@ PlayerAction + GameState + history (из хранилища Backend)
        3. DM:        DungeonMaster.process_turn(TurnRequest)  # LLM, вывод НЕ доверенный
        4. маппинг:   TurnResponse -> GameCommand[]            # integration/mapping.py
        5. движок:    apply_action(state, action, commands, dice)
-  -> TurnOutcome(accepted, state, events, errors, narration, dm_notes)
+  -> TurnOutcome(accepted, state, events, errors, narration, dm_notes, rules_failed)
 ```
 
 ## Принципы
@@ -24,7 +25,8 @@ PlayerAction + GameState + history (из хранилища Backend)
 | LLM не доверяем | Единственная проверка семантики - `engine.apply_action`; адаптер лишь переводит формат |
 | Один источник истины | Состояние меняет только движок; нарратив не возвращается, если ход отклонён |
 | Не тратить LLM зря | Пустой `apply_action` до вызова DM отсекает устаревшую ревизию, чужую сессию и пустой текст |
-| Явные ошибки | Отказ движка - значение (`accepted=False`, `errors`). Сбой инфраструктуры - исключение `IntegrationError` (-> 5xx, ничего не сохранять) |
+| Явные ошибки | Отказ движка - значение (`accepted=False`, `errors`). Сбой DM - исключение `IntegrationError` (-> 5xx, ничего не сохранять) |
+| Вспомогательное не валит основное | Сбой Rules Service не прерывает ход: он играется без правил (`rules_failed=True`, предупреждение в логе) |
 | Чистота | Нет глобального состояния, кубики (`Dice`) и `action_id` приходят от Backend; история ходов передаётся аргументом |
 | Секреты | `hidden_plot` и `history` уходят только в DM; `dm_notes` Backend сохраняет у себя и не отдаёт на Frontend |
 
@@ -53,9 +55,9 @@ PlayerAction + GameState + history (из хранилища Backend)
 ## История ходов
 
 `TurnOrchestrator.play_turn` принимает опциональный аргумент `history` (последовательность
-`TurnHistoryEntry` или словарей). Если установленная модель `ai_dm.models.TurnRequest` поддерживает
-поле `history`, оно пробрасывается в DM; иначе выбрасывается `ValueError`. Это позволяет одной
-ветке `feature/rules-rag` работать и с текущим `main`, и с веткой Егора, где `history` добавлено.
+`TurnHistoryEntry` или словарей) и кладёт его в `TurnRequest.history`; без аргумента история пустая.
+Запись неподдерживаемого типа - `TypeError` (ошибка вызывающего кода, не `IntegrationError`).
+DM сам берёт из истории только последние 10 записей (`HISTORY_LIMIT` в `ai_dm.dm_engine`).
 
 Backend должен передавать в `history` только **принятые** ходы, в порядке от старых к новым.
 Нарратив отклонённого хода не добавляется. `dm_notes` никогда не отдаётся Frontend.
@@ -143,19 +145,46 @@ else:
 `integration/mapping.py` сохраняет имена персонажей и инвентаря в точности, как они есть
 в `GameState`, поэтому валидация имён не ломается на стыке.
 
+## Сбои и логи
+
+| Что сломалось | Поведение | Что видит Backend |
+|---|---|---|
+| Rules Service бросил исключение (не загрузилась модель, битый индекс) | ход продолжается с `NO_RULES`, `logger.warning` с трассировкой | `TurnOutcome.rules_failed=True` |
+| Rules Service вернул пустую строку | то же `NO_RULES`, это не сбой | `rules_failed=False` |
+| DM упал или вернул невалидный ответ | `DungeonMasterError`, ничего не применено | исключение; `str()` содержит только тип ошибки, причина в `__cause__` |
+| DM назвал неизвестного персонажа | `UnmappableResponse` | исключение |
+| Движок отклонил команды | `accepted=False`, нарратив отброшен | `errors` с кодами |
+
+Сообщение `DungeonMasterError` намеренно не содержит текста исходной ошибки: провайдеры LLM могут
+вернуть в нём фрагменты запроса, а Backend отдаёт `str(exc)` клиенту (`HTTPException(502, detail=...)`).
+Полная причина доступна в логах Backend через `__cause__`.
+
+Логгер `integration.orchestrator` пишет одну строку на ход:
+
+```text
+turn session=s1 action=a1 accepted=True errors=- commands=2 rules_failed=False rules_ms=12 dm_ms=3400
+```
+
+Только идентификаторы, коды ошибок и время. Текст игрока, нарратив, заметки DM и скрытый сюжет в логи
+не попадают (проверено тестом). Уровни: `INFO` - ход, `WARNING` - сбой правил, `ERROR` - сбой DM и
+неразрешимый ответ.
+
 ## Тесты
 
-`python -m unittest discover -s integration/tests -t .` - тесты с реальным движком и
-реальным `RulesService`/`RagRulesService`, DM заменён заглушкой `FakeDM`. Проверяют: применение
-изменений, контекст для DM (правила, сюжет, состояние, история при наличии поля), отсечку
-устаревшей ревизии без вызова LLM, отбрасывание нарратива при отказе движка, неизвестного
-персонажа, сбой DM, подмену keyword-поиска на RAG.
+`python -m unittest discover -s integration/tests -t .` - 35 тестов с реальным движком и реальным
+`RulesService`/`RagRulesService`, DM заменён заглушкой `FakeDM`:
+- оркестратор: применение изменений, контекст для DM (правила, сюжет, состояние, история), отсечка
+  устаревшей ревизии без вызова LLM, отбрасывание нарратива при отказе движка, неизвестный персонаж,
+  подмена keyword-поиска на RAG;
+- фабрика: настройки из окружения, все режимы правил, кэш индекса, ошибки конфигурации;
+- устойчивость: сбой правил, отсутствие секретов в логах, безопасное сообщение об ошибке DM.
 
 ## Что остаётся Backend и не реализовано
 
-HTTP-эндпоинт, загрузка/сохранение состояния и compare-and-swap, идемпотентность
-по `action_id`, сохранение seed кубиков, CORS, ретраи LLM (см. `docs/integration.md`).
-Адаптер намеренно не решает эти задачи, чтобы не залезать в зону Backend.
+Загрузка/сохранение состояния и compare-and-swap, идемпотентность по `action_id`, сохранение seed
+кубиков, ретраи LLM (см. `docs/integration.md`). Эндпоинт хода и CORS уже есть в ветке Натальи;
+осталось заменить в нём заглушки на `build_orchestrator()` (см. пример выше) и не создавать
+оркестратор на каждый запрос. Адаптер намеренно не решает эти задачи, чтобы не залезать в зону Backend.
 
 ## Известные риски
 
