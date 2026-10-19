@@ -8,6 +8,8 @@ def to_public_dict(state: GameState, session_name: str = "", log: tuple[object, 
     return {
         "session_id": state.session_id,
         "session_name": session_name,
+        "revision": state.revision,
+        "turn_number": state.turn_number,
         "location": state.location_id,
         "characters": [_public_character(character) for character in state.characters],
         "log": [_public_log_entry(entry) for entry in log],

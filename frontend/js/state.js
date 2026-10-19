@@ -2,7 +2,10 @@ export const STORAGE_KEY = "ai-dungeon-master.session-cache.v2";
 export const LEGACY_STORAGE_KEY = "ai-dungeon-master.public-cache";
 
 export function emptyPublicState(sessionId = "", sessionName = "", connection = "unverified") {
-  return { connection, session_id: String(sessionId), session_name: String(sessionName), location: "", characters: [], log: [] };
+  return {
+    connection, session_id: String(sessionId), session_name: String(sessionName),
+    revision: 0, turn_number: 0, location: "", characters: [], log: [],
+  };
 }
 
 export function emptySessionStore() { return { version: 2, activeSessionId: null, sessions: {} }; }
@@ -31,8 +34,12 @@ function copyCharacter(value) {
 export function normalizePublicState(value, fallbackId = "") {
   const source = value && typeof value === "object" ? value : {};
   const connection = ["server", "unverified", "legacy"].includes(source.connection) ? source.connection : "unverified";
+  const revision = Number(source.revision);
+  const turnNumber = Number(source.turn_number);
   return {
     connection, session_id: String(source.session_id || fallbackId), session_name: String(source.session_name || ""),
+    revision: Number.isInteger(revision) && revision >= 0 ? revision : 0,
+    turn_number: Number.isInteger(turnNumber) && turnNumber >= 0 ? turnNumber : 0,
     location: String(source.location || ""),
     characters: Array.isArray(source.characters) ? source.characters.map(copyCharacter) : [],
     log: Array.isArray(source.log)
