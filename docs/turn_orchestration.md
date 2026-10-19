@@ -65,27 +65,53 @@ Backend должен передавать в `history` только **приня
 перед вызовом LLM. Оба подхода корректны; параметр в `play_turn` удобнее, если Backend сам управляет
 историей.
 
+## Сборка компонентов (`integration/factory.py`)
+
+Backend не должен сам собирать RAG, эмбеддер и DM. Фабрика делает это по настройкам из окружения:
+
+| Переменная | Значение | По умолчанию |
+|---|---|---|
+| `RULES_BOOK_PATH` | путь к книге правил (`.md`, `.txt`, `.pdf`) | обязательна |
+| `RULES_MODE` | `keyword`, `rag` или `hybrid` | `keyword` |
+| `RULES_CACHE_DIR` | куда кэшировать векторы (rag/hybrid) | `.rules_index` |
+| `RULES_EMBEDDING_MODEL` | имя модели sentence-transformers | `paraphrase-multilingual-MiniLM-L12-v2` |
+
+- `build_orchestrator()` создаёт `TurnOrchestrator` с настоящими Rules Service и `AIDungeonMaster`.
+  Любую часть можно подменить (`dm=`, `rules=`) - так делают тесты и заглушки.
+- Сборка может быть долгой: в режимах `rag` и `hybrid` при первом запуске эмбеддится вся книга
+  (дальше берётся из кэша). Поэтому оркестратор создаётся **один раз при старте приложения**, а не на
+  каждый запрос; сам он не хранит состояния между ходами.
+- Ошибки настройки (нет книги, неизвестный режим) - `IntegrationConfigError`. Это не `IntegrationError`:
+  обработчик хода, ловящий `IntegrationError` и отвечающий 502, не должен маскировать поломку конфигурации.
+- Режим `keyword` не скачивает модель и стартует мгновенно (SRD, около 2000 фрагментов, около 0,4 с).
+
 ## Как использовать из Backend
 
 ```python
-from integration import TurnOrchestrator, IntegrationError
-from rules_service import RagRulesService
-from rules_service.embedder import SentenceTransformerEmbedder
-from ai_dm.dm_engine import AIDungeonMaster
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
 from ai_dm.models import TurnHistoryEntry
 from engine.dice import Dice, LocalRandomSource
+from integration import IntegrationError, build_orchestrator
 
-orchestrator = TurnOrchestrator(
-    dm=AIDungeonMaster(),
-    rules=RagRulesService.from_file("data/srd.md", SentenceTransformerEmbedder(), cache_dir=".rules_index"),
-)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.orchestrator = build_orchestrator()      # настройки из окружения, один раз при старте
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
+# внутри обработчика POST /sessions/{id}/turns:
 try:
-    outcome = orchestrator.play_turn(
+    outcome = app.state.orchestrator.play_turn(
         state,
         action,
         hidden_plot,
-        Dice(LocalRandomSource(seed=42)),
+        Dice(LocalRandomSource()),
         room_context=room_context,
         history=session_history[-10:],
     )
