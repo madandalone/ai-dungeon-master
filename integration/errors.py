@@ -8,3 +8,7 @@ class DungeonMasterError(IntegrationError):
 
 class UnmappableResponse(IntegrationError):
     """DM response refers to characters that cannot be resolved to engine character IDs."""
+
+
+class IntegrationConfigError(Exception):
+    """Startup misconfiguration. Not an IntegrationError: a per-turn handler must never turn it into a 502."""

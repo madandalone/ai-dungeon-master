@@ -1,6 +1,6 @@
 import unittest
 
-from ai_dm.models import StateDelta, TurnRequest, TurnResponse
+from ai_dm.models import StateDelta, TurnHistoryEntry, TurnRequest, TurnResponse
 from engine.dice import Dice, SequenceSource
 from engine.models import Character, GameState, InventoryItem, PlayerAction
 from integration import DungeonMasterError, TurnOrchestrator, UnmappableResponse
@@ -76,25 +76,25 @@ class OrchestratorTests(unittest.TestCase):
         TurnOrchestrator(dm, rag).play_turn(make_state(), action, "cult plot", self.dice)
         self.assertIn("long jump", dm.requests[0].rules_summary)
 
-    def test_history_passed_when_model_supports_it(self):
-        from ai_dm.models import TurnRequest
-        if not getattr(TurnRequest, "model_fields", {}).get("history"):
-            self.skipTest("TurnRequest does not support history in this checkout")
-        from ai_dm.models import TurnHistoryEntry
-
+    def test_history_is_passed_to_the_dm(self):
         dm = FakeDM(response())
         entry = TurnHistoryEntry(player_action="предыдущий ход", narrative="было что-то", dm_notes="note")
         self.play(dm, history=[entry])
-        self.assertEqual(len(dm.requests[0].history), 1)
-        self.assertEqual(dm.requests[0].history[0].player_action, "предыдущий ход")
+        self.assertEqual(dm.requests[0].history, [entry])
 
-    def test_history_raises_when_model_does_not_support_it(self):
-        from ai_dm.models import TurnRequest
-        if getattr(TurnRequest, "model_fields", {}).get("history"):
-            self.skipTest("TurnRequest supports history in this checkout")
+    def test_history_accepts_plain_dicts(self):
+        dm = FakeDM(response())
+        self.play(dm, history=[{"player_action": "a", "narrative": "n", "dm_notes": ""}])
+        self.assertEqual(dm.requests[0].history[0].narrative, "n")
 
-        with self.assertRaises(ValueError):
-            self.play(FakeDM(response()), history=[{"player_action": "a", "narration": "n", "dm_notes": ""}])
+    def test_no_history_means_empty_history(self):
+        dm = FakeDM(response())
+        self.play(dm)
+        self.assertEqual(dm.requests[0].history, [])
+
+    def test_invalid_history_entry_is_rejected(self):
+        with self.assertRaises(TypeError):
+            self.play(FakeDM(response()), history=["not an entry"])
 
     def test_no_matching_rules_uses_fallback(self):
         dm = FakeDM(response())
