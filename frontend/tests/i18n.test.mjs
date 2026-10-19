@@ -16,7 +16,7 @@ test("language selection is normalized, persisted, and interpolated", () => {
   const storage = memoryStorage();
   setLanguage("en", storage);
   assert.equal(getLanguage(), "en");
-  assert.equal(t("game.turns", { count: 4 }), "Entries: 4");
+  assert.equal(t("game.turns", { count: 4 }), "Turn: 4");
   setLanguage("unknown", storage);
   assert.equal(getLanguage(), "ru");
   assert.match(storage.getItem("ai-dungeon-master.ui-settings"), /"language":"ru"/);

@@ -30,9 +30,14 @@ class PublicProjectionTests(unittest.TestCase):
             log=({"kind": "player", "character_id": "ira", "text": "I wait.", "hidden_plot": "nope"},),
         )
 
-        self.assertEqual(set(public), {"session_id", "session_name", "location", "characters", "log"})
+        self.assertEqual(
+            set(public),
+            {"session_id", "session_name", "revision", "turn_number", "location", "characters", "log"},
+        )
         self.assertEqual(public["session_id"], "session-1")
         self.assertEqual(public["session_name"], "Harbor Watch")
+        self.assertEqual(public["revision"], 7)
+        self.assertEqual(public["turn_number"], 2)
         self.assertEqual(public["location"], "quay")
         self.assertEqual(public["characters"][0]["hp"], 8)
         self.assertEqual(public["characters"][0]["inventory"][0]["name"], "lantern")
@@ -40,8 +45,6 @@ class PublicProjectionTests(unittest.TestCase):
         rendered = str(public)
         self.assertNotIn("hidden_plot", rendered)
         self.assertNotIn("the gate is false", rendered)
-        self.assertNotIn("revision", rendered)
-        self.assertNotIn("turn_number", rendered)
         self.assertNotIn("world_flags", rendered)
         self.assertNotIn("narration", rendered)
 

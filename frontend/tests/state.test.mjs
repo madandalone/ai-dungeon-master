@@ -50,3 +50,19 @@ test("saved store can be loaded again", () => {
   saveSessionStore(store, storage);
   assert.equal(loadSessionStore(storage).sessions.session.session_name, "Quest");
 });
+
+test("public state keeps safe turn metadata", () => {
+  const state = putSession(undefined, {
+    ...emptyPublicState("session", "Quest", "server"), revision: 4, turn_number: 3,
+  });
+  assert.equal(activePublicState(state).revision, 4);
+  assert.equal(activePublicState(state).turn_number, 3);
+});
+
+test("invalid turn metadata falls back to zero", () => {
+  const state = putSession(undefined, {
+    ...emptyPublicState("session", "Quest", "server"), revision: -1, turn_number: "bad",
+  });
+  assert.equal(activePublicState(state).revision, 0);
+  assert.equal(activePublicState(state).turn_number, 0);
+});

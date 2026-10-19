@@ -1,18 +1,14 @@
 # Current Implementation
 
-This document describes the code that exists in commits `6311acb` and
-`7419552` on `feature/frontend-engine`. It does not describe planned endpoints
-or components as if they were already implemented.
-
-The FastAPI prototype is currently on the separate
-`origin/feature/backend-setup` branch. It is not part of
-`feature/frontend-engine`.
+This document describes the current Frontend and Game Engine contracts. It
+records implemented behavior separately from work that still belongs to the
+Backend, AI Dungeon Master, and Rules Service owners.
 
 ## Frontend
 
 ### Purpose
 
-The Frontend is a responsive browser shell for sessions, browser-local heroes,
+The Frontend is a responsive browser client for server sessions, live turns,
 the adventure log, and a projected world summary. It uses HTML, CSS, and
 vanilla JavaScript modules, has no build step, and contains no Game Engine
 business logic.
@@ -23,9 +19,9 @@ CSS and inline SVG shapes; no game-specific third-party artwork is bundled.
 ### Navigation and language
 
 The application is split into four sections: **Game**, **Heroes**, **World**,
-and **Session**. A desktop sidebar can collapse to icons. Below 760 px it
-becomes an overlay drawer. The active section and collapsed state are saved as
-UI preferences.
+and **Session**. A desktop sidebar can collapse to icons. Below 1100 px it
+becomes an overlay drawer so a narrow desktop window does not squeeze game
+cards. The active section and collapsed state are saved as UI preferences.
 
 All static and runtime UI messages are available in Russian and English through
 `frontend/js/i18n.js`. Russian is the default. The language selector persists
@@ -44,6 +40,8 @@ sessions:
     connection: "server" | "unverified" | "legacy"
     session_id: string
     session_name: string
+    revision: integer
+    turn_number: integer
     location: string
     characters: Character[]
     log: LogEntry[]
@@ -54,20 +52,25 @@ Each session has independent heroes, world state, and log entries. The previous
 a session ID remains visible as the read-only `legacy-local` session.
 
 Loading malformed data falls back to an empty store. Normalization copies only
-allowlisted public fields. Character IDs are generated with
-`crypto.randomUUID()` when available. A starting item's text remains both its
-local ID and display name until an item catalogue exists.
+allowlisted public fields. A fresh server snapshot replaces HP, inventory, and
+location while preserving the tab-local public chronicle until Backend exposes
+public history.
 
 ### Implemented experience
 
-- **Game** shows the local chronicle, acting hero selector, action composer,
-  and the active hero HUD.
-- **Heroes** creates browser-local characters and renders cards with an
-  automatically selected archetype icon, accessible HP progress, stats, and
-  inventory.
+- **Game** submits a live turn, shows player and Dungeon Master messages, and
+  refreshes the active hero HUD from the returned server state.
+- **Heroes** renders server characters with an automatically selected
+  archetype icon, accessible HP progress, stats, and inventory. The creation
+  form is visibly disabled until Backend provides a character endpoint.
 - **World** summarizes the current location, session, party, and log size.
-- **Session** checks Backend health, creates a session, stores an unverified
-  session code, and switches between locally cached sessions.
+- **Session** checks Backend health, creates a session, validates a session ID
+  through Backend, and switches between cached server snapshots.
+
+A compact sticky HUD keeps the active session, selected hero with current HP,
+and latest public event visible while any section is scrolled. Long names and
+events are truncated visually but retain the full event in the element title.
+On narrow screens the latest event moves to a second row.
 
 When the Backend is unavailable, the application enters an explicit read-only
 mode: saved data and navigation remain available, while mutation forms are
@@ -78,26 +81,75 @@ disabled with an actionable explanation.
 The API base follows the Frontend hostname on port 8000. The client implements:
 
 - `GET /health`, healthy only for a successful `{ "status": "ok" }` response;
-- `POST /sessions` with `{ "name": string }`, expecting string `id` and `name`.
+- `POST /sessions` with `{ "name": string }`, expecting string `id` and `name`;
+- `GET /sessions/{id}/state`, expecting the public Engine projection;
+- `POST /sessions/{id}/turns` with `character_id` and `text`, expecting
+  acceptance, public narration, current state, revision, turn number, and
+  structured errors. A structured `warnings` array is optional for backward
+  compatibility and defaults to an empty list.
 
-The current Backend does not allow browser CORS requests. CORS configuration is
-a Backend responsibility and must be added before its healthy state is visible
-from a separately served Frontend.
+Network, missing-session, DM-unavailable, and malformed-response failures are
+kept separate. Failed turns retain the action text and do not append a false
+chronicle entry. Raw Backend error messages are not shown to the player.
 
-Joining by session ID is not verified because no lookup endpoint exists.
-Characters, actions, narration placeholders, and per-session progress remain
-browser-local. The location remains unknown until a public-state endpoint is
-implemented.
+Browser use still depends on Backend CORS configuration. The current turn
+branch allows port 5500; the team must also allow the documented development
+origin on port 4173.
 
 ### Tests and intentional limits
 
 `npm run test:frontend` uses Node's built-in test runner and covers translation
-parity, session migration and isolation, API response validation, archetype
-selection, and HP thresholds.
+parity, session migration and isolation, API response validation, turn state
+merging, safe failure messages, archetype selection, and HP thresholds.
 
-The Frontend intentionally does not implement turn requests, Engine execution,
-generated narration, authoritative character creation, authentication,
-cross-device persistence, synchronization, or multiplayer updates.
+The Frontend does not implement authoritative character creation,
+authentication, cross-device persistence, or multiplayer updates. Public
+history is tab-local because Backend history currently includes private DM
+notes and has no separate public endpoint.
+
+### Integration-ready UI contract
+
+The Session screen contains a module-readiness panel for Backend, AI Master,
+Rules Service, and public history. It never guesses that a component is ready.
+The current `{ "status": "ok" }` health response marks only Backend as online
+and leaves the other modules as `unknown`.
+
+Backend can activate the remaining indicators without a Frontend layout change
+by extending `GET /health`:
+
+```json
+{
+  "status": "ok",
+  "components": {
+    "dm": "online",
+    "rules": "degraded",
+    "history": "online"
+  }
+}
+```
+
+Allowed component values are `online`, `degraded`, and `offline`. Missing or
+unknown values are rendered as “No data”. Internal diagnostics must not be
+included in this public response.
+
+Turn responses may include non-fatal warnings:
+
+```json
+{
+  "accepted": true,
+  "warnings": [{ "code": "RULES_UNAVAILABLE" }]
+}
+```
+
+`RULES_UNAVAILABLE` keeps the accepted turn, shows a yellow in-game notice, and
+marks Rules Service as degraded. Warning messages from Backend are deliberately
+ignored so provider details cannot leak into the UI. Errors remain rejection
+signals and use the red frame.
+
+Future character creation should add a dedicated API client function and only
+then enable the existing form. Future public history should populate the
+allowlisted `log` entries in the public state or expose a separate public
+endpoint; it must never reuse history objects containing `dm_notes`.
 
 ## Game Engine
 
@@ -343,6 +395,7 @@ determinism.
 
 - `session_id`;
 - externally supplied `session_name`;
+- safe `revision` and `turn_number` counters;
 - `location`, mapped from `state.location_id`;
 - character ID, name, concept, HP, max HP, stats, and inventory;
 - externally supplied log entries reduced to `kind`, `character_id`, and
@@ -350,8 +403,6 @@ determinism.
 
 It intentionally omits:
 
-- `revision`;
-- `turn_number`;
 - all `world_flags`;
 - errors and Engine internals;
 - narration except text explicitly supplied through `log`;
@@ -363,9 +414,8 @@ to prove that all flags are omitted; it is not a supported storage convention.
 
 Omitting `world_flags` prevents accidental exposure of internal world facts,
 but a future product may need a separately allowlisted public-world
-projection. Omitting `revision` is incompatible with a Frontend that must
-submit `expected_revision` unless the Backend returns revision metadata
-outside this projection.
+projection. Revision and turn number are safe synchronization metadata and do
+not reveal campaign content.
 
 ### Unit tests
 
@@ -385,22 +435,52 @@ The current suite contains 14 `unittest` tests and covers:
 - fixed and exhausted dice sources;
 - filtering of Engine-internal fields from the public projection.
 
-There are no Backend integration tests or Frontend automated tests yet.
+Frontend tests use Node's built-in test runner. Backend and integration suites
+cover the current turn orchestration separately.
+
+## Team Follow-up
+
+Backend ownership:
+
+- merge the turn endpoint and allow the Frontend development origins on ports
+  4173 and 5500 through CORS;
+- extend `GET /health` with the public `components.dm`, `components.rules`, and
+  `components.history` statuses described above;
+- build the real orchestrator once at application startup instead of creating
+  fake DM and rules providers per request;
+- pass a sanitized public chronicle into `to_public_dict(..., log=...)`; every
+  entry must contain only `kind`, `character_id`, and `text`;
+- add `POST /sessions/{id}/characters` for the existing form and return the
+  updated public state after creation;
+- return stable public `errors` and `warnings` without raw provider messages.
+
+Rules and integration ownership:
+
+- wire `build_orchestrator()` into Backend after the rules-wiring branch is
+  merged;
+- surface a rules outage only as a safe `RULES_UNAVAILABLE` warning;
+- keep the turn accepted when Rules Service is optional and unavailable, so
+  the Frontend can render the yellow limited-mode notice;
+- keep retrieved rule text, embeddings, and internal logs outside the public
+  response.
+
+AI Dungeon Master ownership:
+
+- keep public narration in Russian and preserve existing character and item
+  names;
+- keep `dm_thoughts` private and return a validated `TurnResponse`;
+- verify consecutive turns with history, HP, inventory, and location changes.
 
 ## Current Limitations
 
-- The AI Dungeon Master and LLM command generation are not implemented.
-- Backend orchestration of actions, commands, Engine execution, and narration
-  is not implemented.
-- The Backend prototype and these two commits are on separate branches.
-- Session storage in the Backend prototype is process-local and non-durable.
-- No GameState, character, event, action, or narration persistence exists.
-- No character, join-session, get-session, public-state, or turn endpoint
-  exists.
-- The Backend prototype has no CORS configuration for the separate Frontend.
-- Rules Service and rule ingestion are not implemented.
-- RAG, chunking, and retrieval are not implemented.
-- Narration is only a fixed Frontend placeholder.
+- Backend session state and private turn history are process-local and
+  disappear on restart.
+- Backend still uses fake DM and rules providers until the integration factory
+  is wired in.
+- The current CORS list includes port 5500 but not the documented port 4173.
+- There is no authoritative character-creation endpoint.
+- Public turn history is not available from Backend, so the browser chronicle
+  survives only in the current tab.
 - Combat is limited to generic HP adjustment and skill checks; there is no
   initiative, action economy, conditions, armor, or encounter model.
 - There is no multiplayer identity, authorization, turn ownership, locking,
