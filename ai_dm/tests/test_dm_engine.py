@@ -263,7 +263,7 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(AIDungeonMaster(client).process_turn(turn_request()), TurnResponse(**TURN))
             constructor.assert_not_called()
 
-    def test_real_sdk_transport_failures_have_no_hidden_retries(self):
+    def test_real_sdk_transport_failures_have_only_the_bounded_provider_retry(self):
         for failure in (401, 429, 500, "timeout", "connection"):
             with self.subTest(failure=failure):
                 requests = []
@@ -280,11 +280,14 @@ class ConfigurationTests(unittest.TestCase):
                     def create_client(**kwargs):
                         return OpenAI(http_client=http_client, **kwargs)
 
-                    with patch.object(dm_engine, "OpenAI", side_effect=create_client):
+                    with patch.object(dm_engine, "OpenAI", side_effect=create_client), \
+                            patch.object(dm_engine.time, "sleep") as sleep:
                         with self.assertRaises(ProviderError) as caught:
                             AIDungeonMaster().process_turn(turn_request())
                     self.assertIsNotNone(caught.exception.__cause__)
-                self.assertEqual(len(requests), 1)
+                expected = 2 if failure in (429, 500) else 1
+                self.assertEqual(len(requests), expected)
+                self.assertEqual(sleep.call_count, expected - 1)
 
 
 class IntegrationCompatibilityTests(unittest.TestCase):

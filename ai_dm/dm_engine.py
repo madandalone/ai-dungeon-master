@@ -2,6 +2,7 @@ import json
 import math
 import os
 import re
+import time
 from collections.abc import Callable, Sequence
 from typing import TypeVar
 
@@ -10,14 +11,16 @@ from dotenv import load_dotenv
 from openai import APIError, OpenAI
 from pydantic import BaseModel, ValidationError
 
+from ai_dm.context import GenerationLimits, fit_messages
 from ai_dm.dnd_api import DnD5eClient
-from ai_dm.errors import ConfigurationError, InvalidResponseError, ProviderError
+from ai_dm.errors import ConfigurationError, InvalidResponseError
 from ai_dm.models import (
     CampaignStartRequest,
     CampaignStartResponse,
     TurnRequest,
     TurnResponse,
 )
+from ai_dm.provider import RetryPolicy, provider_error, without_sdk_retries
 
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
 HISTORY_LIMIT = 10
@@ -33,6 +36,10 @@ room_context, intro_narrative, narrative, dm_thoughts, новые new_location �
 Не смешивай русский и английский в повествовании. Используй русские обозначения правил.
 Ключи JSON оставляй как в схеме. Существующие имена персонажей, названия предметов
 и идентификаторы из состояния сохраняй точно: ссылки на них нельзя переводить.
+Пиши компактно: narrative и intro_narrative — один короткий абзац, примерно 3–5 предложений.
+Приватные заметки и описание комнаты — 1–2 предложения, без повторения известных фактов.
+Сохраняй важные последствия действий и все необходимые изменения состояния.
+Всегда завершай JSON полностью; при нехватке места сокращай описания, а не структуру ответа.
 """
 
 
@@ -103,8 +110,8 @@ def _language_errors(fields: dict[str, str], references: Sequence[str] = ()) -> 
 class AIDungeonMaster:
     """Stateless game logic with a lazy, reusable LLM client.
 
-    A supplied client belongs to the caller, including its timeout/retry policy.
-    The default client uses AI_DM_TIMEOUT_SECONDS and disables SDK retries.
+    A supplied client belongs to the caller, including its timeout and transport.
+    SDK retries are disabled; one provider retry and one response repair are allowed.
     """
 
     def __init__(self, client: OpenAI | None = None):
@@ -117,40 +124,64 @@ class AIDungeonMaster:
 
     def _generate(
         self,
-        prompt: str,
+        prompt: str | Callable[[int], str],
         response_model: type[ResponseModel],
         validate_response: Callable[[ResponseModel], None] | None = None,
+        *,
+        history_count: int = 0,
     ) -> ResponseModel:
-        client = self._get_client()
+        client = without_sdk_retries(self._get_client())
+        limits = GenerationLimits.from_env()
+        retry_policy = RetryPolicy.from_env()
         model = os.getenv("MODEL_NAME", "Qwen/Qwen3.8-27B")
         schema = json.dumps(response_model.model_json_schema(), ensure_ascii=False, indent=2)
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"{prompt}\nВерни JSON по схеме:\n{schema}"},
-        ]
-        for attempt in range(2):
+        repair_messages = []
+        provider_retry_used = False
+        repair_used = False
+
+        def build_messages(count: int) -> list[dict[str, str]]:
+            text = prompt(count) if callable(prompt) else prompt
+            return [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"{text}\nВерни JSON по схеме:\n{schema}"},
+                *repair_messages,
+            ]
+
+        for attempt in range(3):
+            messages, history_count = fit_messages(
+                build_messages, history_count, limits.max_context_chars, repair=repair_used,
+            )
             try:
                 response = client.chat.completions.create(
                     model=model,
                     messages=messages,
                     temperature=0.8,
+                    max_tokens=limits.max_output_tokens,
                 )
             except (APIError, httpx.HTTPError, TimeoutError, ConnectionError) as exc:
-                # Do not include provider payloads or private prompts in the public message.
-                raise ProviderError("Dungeon Master provider request failed.") from exc
+                error = provider_error(exc)
+                delay = retry_policy.delay_for(error)
+                if not provider_retry_used and attempt < 2 and delay is not None:
+                    provider_retry_used = True
+                    time.sleep(delay)
+                    continue
+                raise error from exc
 
             raw = None
             try:
                 raw = _response_text(response)
+                if getattr(response.choices[0], "finish_reason", None) == "length":
+                    raise ValueError("Достигнут лимит токенов ответа. Сократи текст и верни полный JSON.")
                 result = response_model.model_validate_json(_strip_json_fence(raw))
                 if validate_response is not None:
                     validate_response(result)
                 return result
             except ValueError as exc:
-                if attempt == 1:
+                if repair_used or attempt == 2:
                     raise InvalidResponseError(
                         "Dungeon Master returned an invalid response after one repair attempt."
                     ) from exc
+                repair_used = True
                 details = (
                     json.dumps(exc.errors(include_input=False, include_url=False), ensure_ascii=False)
                     if isinstance(exc, ValidationError)
@@ -166,7 +197,6 @@ class AIDungeonMaster:
                         f"{details}\nВерни только полный JSON-объект по исходной схеме."
                     ),
                 })
-                messages = [*messages, *repair_messages]
 
         raise AssertionError("The bounded generation loop must return or raise.")
 
@@ -230,11 +260,11 @@ class AIDungeonMaster:
             if errors:
                 raise ValueError(" ".join(errors))
 
-        history_json = json.dumps(
-            [entry.model_dump() for entry in request.history[-HISTORY_LIMIT:]],
-            ensure_ascii=False,
-        )
-        prompt = f"""
+        history = [entry.model_dump() for entry in request.history[-HISTORY_LIMIT:]]
+
+        def build_prompt(count: int) -> str:
+            history_json = json.dumps(history[-count:] if count else [], ensure_ascii=False)
+            return f"""
 ### ПРАВИЛА:
 {request.rules_summary}
 
@@ -264,7 +294,9 @@ HP, инвентарь и локация определяются Game Engine.
 ### ДЕЙСТВИЕ ИГРОКА:
 "{request.player_action}"
 """
-        return self._generate(prompt, TurnResponse, validate_response=validate_turn)
+        return self._generate(
+            build_prompt, TurnResponse, validate_response=validate_turn, history_count=len(history),
+        )
 
 
 _default_dm = AIDungeonMaster()
