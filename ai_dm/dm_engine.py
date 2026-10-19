@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from openai import APIError, OpenAI
 from pydantic import BaseModel, ValidationError
 
+from ai_dm.context import GenerationLimits, fit_messages
 from ai_dm.dnd_api import DnD5eClient
 from ai_dm.errors import ConfigurationError, InvalidResponseError, ProviderError
 from ai_dm.models import (
@@ -33,6 +34,10 @@ room_context, intro_narrative, narrative, dm_thoughts, новые new_location �
 Не смешивай русский и английский в повествовании. Используй русские обозначения правил.
 Ключи JSON оставляй как в схеме. Существующие имена персонажей, названия предметов
 и идентификаторы из состояния сохраняй точно: ссылки на них нельзя переводить.
+Пиши компактно: narrative и intro_narrative — один короткий абзац, примерно 3–5 предложений.
+Приватные заметки и описание комнаты — 1–2 предложения, без повторения известных фактов.
+Сохраняй важные последствия действий и все необходимые изменения состояния.
+Всегда завершай JSON полностью; при нехватке места сокращай описания, а не структуру ответа.
 """
 
 
@@ -117,23 +122,36 @@ class AIDungeonMaster:
 
     def _generate(
         self,
-        prompt: str,
+        prompt: str | Callable[[int], str],
         response_model: type[ResponseModel],
         validate_response: Callable[[ResponseModel], None] | None = None,
+        *,
+        history_count: int = 0,
     ) -> ResponseModel:
         client = self._get_client()
+        limits = GenerationLimits.from_env()
         model = os.getenv("MODEL_NAME", "Qwen/Qwen3.8-27B")
         schema = json.dumps(response_model.model_json_schema(), ensure_ascii=False, indent=2)
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"{prompt}\nВерни JSON по схеме:\n{schema}"},
-        ]
+        repair_messages = []
+
+        def build_messages(count: int) -> list[dict[str, str]]:
+            text = prompt(count) if callable(prompt) else prompt
+            return [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"{text}\nВерни JSON по схеме:\n{schema}"},
+                *repair_messages,
+            ]
+
         for attempt in range(2):
+            messages, history_count = fit_messages(
+                build_messages, history_count, limits.max_context_chars, repair=attempt > 0,
+            )
             try:
                 response = client.chat.completions.create(
                     model=model,
                     messages=messages,
                     temperature=0.8,
+                    max_tokens=limits.max_output_tokens,
                 )
             except (APIError, httpx.HTTPError, TimeoutError, ConnectionError) as exc:
                 # Do not include provider payloads or private prompts in the public message.
@@ -142,6 +160,8 @@ class AIDungeonMaster:
             raw = None
             try:
                 raw = _response_text(response)
+                if getattr(response.choices[0], "finish_reason", None) == "length":
+                    raise ValueError("Достигнут лимит токенов ответа. Сократи текст и верни полный JSON.")
                 result = response_model.model_validate_json(_strip_json_fence(raw))
                 if validate_response is not None:
                     validate_response(result)
@@ -166,7 +186,6 @@ class AIDungeonMaster:
                         f"{details}\nВерни только полный JSON-объект по исходной схеме."
                     ),
                 })
-                messages = [*messages, *repair_messages]
 
         raise AssertionError("The bounded generation loop must return or raise.")
 
@@ -230,11 +249,11 @@ class AIDungeonMaster:
             if errors:
                 raise ValueError(" ".join(errors))
 
-        history_json = json.dumps(
-            [entry.model_dump() for entry in request.history[-HISTORY_LIMIT:]],
-            ensure_ascii=False,
-        )
-        prompt = f"""
+        history = [entry.model_dump() for entry in request.history[-HISTORY_LIMIT:]]
+
+        def build_prompt(count: int) -> str:
+            history_json = json.dumps(history[-count:] if count else [], ensure_ascii=False)
+            return f"""
 ### ПРАВИЛА:
 {request.rules_summary}
 
@@ -264,7 +283,9 @@ HP, инвентарь и локация определяются Game Engine.
 ### ДЕЙСТВИЕ ИГРОКА:
 "{request.player_action}"
 """
-        return self._generate(prompt, TurnResponse, validate_response=validate_turn)
+        return self._generate(
+            build_prompt, TurnResponse, validate_response=validate_turn, history_count=len(history),
+        )
 
 
 _default_dm = AIDungeonMaster()
