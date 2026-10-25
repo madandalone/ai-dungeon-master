@@ -7,6 +7,7 @@ from integration.errors import IntegrationConfigError
 from integration.orchestrator import TurnOrchestrator
 from integration.ports import DungeonMaster, RulesProvider
 from rules_service.embedder import Embedder
+from rules_service.errors import RulesUnavailableError
 from rules_service.service import load_text
 
 RULES_MODES = ("keyword", "rag", "hybrid")
@@ -52,7 +53,11 @@ def build_rules_provider(settings: RulesSettings, embedder: Embedder | None = No
         from rules_service.embedder import DEFAULT_MODEL, SentenceTransformerEmbedder
 
         embedder = SentenceTransformerEmbedder(settings.embedding_model or DEFAULT_MODEL)
-    rag = RagRulesService.from_text(text, embedder, settings.cache_dir)
+    try:
+        embedder.encode(["warm-up"])  # a cached index would otherwise postpone a missing model to the first turn
+        rag = RagRulesService.from_text(text, embedder, settings.cache_dir)
+    except RulesUnavailableError as exc:
+        raise IntegrationConfigError(f"RULES_MODE={settings.mode} needs the embedding model: {exc}") from exc
     return rag if settings.mode == "rag" else HybridRulesService(keyword, rag)
 
 

@@ -1,5 +1,8 @@
 import unittest
 
+from pydantic import ValidationError
+
+from ai_dm.errors import AIDMError
 from ai_dm.models import StateDelta, TurnHistoryEntry, TurnRequest, TurnResponse
 from engine.dice import Dice, SequenceSource
 from engine.models import Character, GameState, InventoryItem, PlayerAction
@@ -82,19 +85,21 @@ class OrchestratorTests(unittest.TestCase):
         self.play(dm, history=[entry])
         self.assertEqual(dm.requests[0].history, [entry])
 
-    def test_history_accepts_plain_dicts(self):
+    def test_history_order_is_preserved(self):
         dm = FakeDM(response())
-        self.play(dm, history=[{"player_action": "a", "narrative": "n", "dm_notes": ""}])
-        self.assertEqual(dm.requests[0].history[0].narrative, "n")
+        entries = [TurnHistoryEntry(player_action=f"ход {i}", narrative="n") for i in range(3)]
+        self.play(dm, history=entries)
+        self.assertEqual([e.player_action for e in dm.requests[0].history], ["ход 0", "ход 1", "ход 2"])
 
     def test_no_history_means_empty_history(self):
         dm = FakeDM(response())
         self.play(dm)
         self.assertEqual(dm.requests[0].history, [])
 
-    def test_invalid_history_entry_is_rejected(self):
-        with self.assertRaises(TypeError):
-            self.play(FakeDM(response()), history=["not an entry"])
+    def test_history_must_be_typed_entries(self):
+        for bad in (["not an entry"], [42]):
+            with self.subTest(bad=bad), self.assertRaises(ValidationError):
+                self.play(FakeDM(response()), history=bad)
 
     def test_no_matching_rules_uses_fallback(self):
         dm = FakeDM(response())
@@ -123,7 +128,7 @@ class OrchestratorTests(unittest.TestCase):
 
     def test_dm_failure_is_wrapped(self):
         with self.assertRaises(DungeonMasterError):
-            self.play(FakeDM(error=TimeoutError("llm down")))
+            self.play(FakeDM(error=AIDMError("llm down")))
 
     def test_empty_response_still_advances_turn(self):
         out = self.play(FakeDM(response()))
