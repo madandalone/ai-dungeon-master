@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyTurnResult, failureMessageKey, mergeServerState, pinnedContext, stateChanges, warningMessageKey } from "../js/turns.js";
+import {
+  applyTurnResult,
+  createTurnAttempt,
+  failureMessageKey,
+  mergeServerState,
+  pinnedContext,
+  stateChanges,
+  warningMessageKey,
+} from "../js/turns.js";
 
 function state(overrides = {}) {
   return {
@@ -16,6 +24,25 @@ test("server refresh preserves the tab chronicle and updates counters", () => {
   const merged = mergeServerState(previous, state({ log: [], revision: 2, turn_number: 2 }));
   assert.equal(merged.log[0].text, "Wait");
   assert.equal(merged.turn_number, 2);
+});
+
+test("turn attempt keeps its id across a retry of the same action", () => {
+  const current = state({ revision: 7 });
+  const action = { characterId: "hero", text: "Open the door" };
+  const first = createTurnAttempt(null, current, action, () => "action-1");
+  const retry = createTurnAttempt(first, state({ revision: 8 }), action, () => "action-2");
+  const changed = createTurnAttempt(first, current, { ...action, text: "Wait" }, () => "action-3");
+
+  assert.deepEqual(first, {
+    sessionId: "s1",
+    actionId: "action-1",
+    expectedRevision: 7,
+    characterId: "hero",
+    text: "Open the door",
+  });
+  assert.equal(retry, first);
+  assert.equal(changed.actionId, "action-3");
+  assert.equal(changed.expectedRevision, 7);
 });
 
 test("accepted turn appends public player and master entries", () => {

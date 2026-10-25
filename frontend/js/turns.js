@@ -1,5 +1,25 @@
 import { normalizePublicState } from "./state.js";
 
+function defaultActionId() {
+  return globalThis.crypto.randomUUID();
+}
+
+export function createTurnAttempt(previous, state, action, createId = defaultActionId) {
+  const sameAction = previous
+    && previous.sessionId === state.session_id
+    && previous.characterId === action.characterId
+    && previous.text === action.text;
+  if (sameAction) return previous;
+
+  return {
+    sessionId: state.session_id,
+    actionId: createId(),
+    expectedRevision: state.revision,
+    characterId: action.characterId,
+    text: action.text,
+  };
+}
+
 export function mergeServerState(previous, snapshot, metadata = {}) {
   const normalized = normalizePublicState({
     ...snapshot,
@@ -44,6 +64,7 @@ export function failureMessageKey(error) {
   const keys = {
     network_error: "game.error.network",
     not_found: "game.error.notFound",
+    stale_revision: "game.error.staleRevision",
     master_unavailable: "game.error.masterUnavailable",
     invalid_response: "game.error.invalidResponse",
     INVALID_CHARACTER: "game.error.invalidCharacter",
