@@ -12,6 +12,10 @@ from integration import IntegrationError, TurnOrchestrator
 from ai_dm.models import StateDelta, TurnRequest, TurnResponse
 from fastapi.middleware.cors import CORSMiddleware
 from ai_dm.models import TurnHistoryEntry
+from functools import lru_cache
+
+from fastapi import Depends
+from integration.factory import build_orchestrator
 
 app = FastAPI(title="AI Dungeon Master API")
 
@@ -69,6 +73,9 @@ sessions: dict[str, GameSession] = {}
 game_states: dict[str, GameState] = {}
 game_histories: dict[str, list[TurnHistoryEntry]] = {}
 
+@lru_cache(maxsize=1)
+def get_orchestrator() -> TurnOrchestrator:
+    return build_orchestrator()
 
 @app.get("/health")
 def health_check():
@@ -167,7 +174,11 @@ def process_action(session_id: str, action_data: PlayerActionRequest):
 
 
 @app.post("/sessions/{session_id}/turns")
-def process_turn(session_id: str, turn_data: PlayerTurnRequest):
+def process_turn(
+    session_id: str,
+    turn_data: PlayerTurnRequest,
+    orchestrator: TurnOrchestrator = Depends(get_orchestrator),
+):
     if session_id not in game_states:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -181,10 +192,6 @@ def process_turn(session_id: str, turn_data: PlayerTurnRequest):
         expected_revision=state.revision,
     )
 
-    orchestrator = TurnOrchestrator(
-        dm=FakeDungeonMaster(),
-        rules=FakeRulesProvider(),
-    )
 
     try:
         outcome = orchestrator.play_turn(

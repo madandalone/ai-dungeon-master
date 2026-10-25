@@ -1,6 +1,10 @@
+
 fastapi
 uvicorn
+pydantic
+httpx
+openai
+python-dotenv
 pypdf
 numpy
 sentence-transformers
-httpx2
