@@ -83,14 +83,18 @@ The API base follows the Frontend hostname on port 8000. The client implements:
 - `GET /health`, healthy only for a successful `{ "status": "ok" }` response;
 - `POST /sessions` with `{ "name": string }`, expecting string `id` and `name`;
 - `GET /sessions/{id}/state`, expecting the public Engine projection;
-- `POST /sessions/{id}/turns` with `character_id` and `text`, expecting
+- `POST /sessions/{id}/turns` with a client-generated `action_id`, the last
+  observed `expected_revision`, `character_id`, and `text`, expecting
   acceptance, public narration, current state, revision, turn number, and
   structured errors. A structured `warnings` array is optional for backward
   compatibility and defaults to an empty list.
 
 Network, missing-session, DM-unavailable, and malformed-response failures are
 kept separate. Failed turns retain the action text and do not append a false
-chronicle entry. Raw Backend error messages are not shown to the player.
+chronicle entry. A retry of the same unchanged action reuses its `action_id`.
+On HTTP 409 the client discards that attempt, refreshes the session, preserves
+the text, and asks the player to review and submit it again. Raw Backend error
+messages are not shown to the player.
 
 Browser use still depends on Backend CORS configuration. The current turn
 branch allows port 5500; the team must also allow the documented development
@@ -201,6 +205,9 @@ All Engine models are frozen dataclasses.
 - `stats` as a string-to-integer mapping;
 - `inventory` as a tuple of items.
 
+Construction copies `stats` into a read-only mapping and normalizes inventory
+to a tuple, so caller-owned collections cannot mutate a frozen character.
+
 `GameState` contains:
 
 - `session_id`;
@@ -209,6 +216,10 @@ All Engine models are frozen dataclasses.
 - `location_id`;
 - a tuple of characters;
 - `world_flags` with `bool`, `int`, or `str` values.
+
+Construction normalizes characters to a tuple and copies `world_flags` into a
+read-only mapping. `frozen=True` therefore also protects the nested state
+collections used by the Engine.
 
 It does not contain prompts, rules, chat history, narration, timestamps, LLM
 metadata, or an explicit hidden-plot field.
@@ -419,7 +430,7 @@ not reveal campaign content.
 
 ### Unit tests
 
-The current suite contains 14 `unittest` tests and covers:
+The current suite contains 15 `unittest` tests and covers:
 
 - input state preservation and creation of a new accepted state;
 - exactly one revision/turn increment;
@@ -487,5 +498,5 @@ AI Dungeon Master ownership:
   push update, or reconnect protocol.
 - There is no item/location/stat rules catalog.
 - Command, event, error, and public-state JSON schemas are not versioned.
-- Retry/idempotency behavior for `action_id` is not implemented by the
-  Backend.
+- The Frontend sends stable retry metadata, but idempotent `action_id` storage
+  and compare-and-swap revision handling are not implemented by the Backend.
