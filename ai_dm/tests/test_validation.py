@@ -6,6 +6,35 @@ from ai_dm.validation import validate_campaign, validate_turn
 
 
 class ValidationTests(unittest.TestCase):
+    def test_normalization_returns_copies_and_preserves_inputs_even_on_failure(self):
+        request = turn_request()
+        campaign_request = CampaignStartRequest(setting_theme="Крипта", characters=request.game_state.active_characters)
+        for invalid in (False, True):
+            with self.subTest(invalid=invalid):
+                turn = TurnResponse(**{
+                    **TURN, "narrative": "Вы видите cклеп.",
+                    "state_updates": [{"character_name": "Элиас", "items_added": ["Cтарый ключ"]}],
+                    "dm_thoughts": "English" if invalid else "Cтраж ждёт.",
+                })
+                campaign = CampaignStartResponse(**{
+                    **CAMPAIGN, "intro_narrative": "Вы видите cклеп.",
+                    "hidden_plot": "English" if invalid else "Cтраж ждёт.",
+                })
+                values = (request, campaign_request, turn, campaign)
+                before = [value.model_copy(deep=True) for value in values]
+                if invalid:
+                    with self.assertRaises(ValueError):
+                        validate_turn(turn, request=request)
+                    with self.assertRaises(ValueError):
+                        validate_campaign(campaign, request=campaign_request)
+                else:
+                    normalized_turn = validate_turn(turn, request=request)
+                    normalized_campaign = validate_campaign(campaign, request=campaign_request)
+                    self.assertEqual(normalized_turn.narrative, "Вы видите склеп.")
+                    self.assertEqual(normalized_campaign.intro_narrative, "Вы видите склеп.")
+                    self.assertIsNot(normalized_turn.state_updates[0], turn.state_updates[0])
+                self.assertEqual(list(values), before)
+
     def test_valid_campaign_and_turn_preserve_inputs(self):
         request = turn_request()
         campaign_request = CampaignStartRequest(setting_theme="Крипта", characters=request.game_state.active_characters)

@@ -93,7 +93,7 @@ class AIDungeonMaster:
         self,
         prompt: str | Callable[[int], str],
         response_model: type[ResponseModel],
-        validate_response: Callable[[ResponseModel], None] | None = None,
+        validate_response: Callable[[ResponseModel], ResponseModel] | None = None,
         *,
         templates: PromptTemplates,
         history_count: int = 0,
@@ -142,7 +142,7 @@ class AIDungeonMaster:
                     raise ValueError("Достигнут лимит токенов ответа. Сократи текст и верни полный JSON.")
                 result = response_model.model_validate_json(_strip_json_fence(raw))
                 if validate_response is not None:
-                    validate_response(result)
+                    result = validate_response(result)
                 return result
             except ValueError as exc:
                 if repair_used or attempt == 2:
