@@ -1,0 +1,3 @@
+${prompt}
+Верни JSON по схеме:
+${schema}
