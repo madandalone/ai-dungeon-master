@@ -5,7 +5,7 @@ from pathlib import Path
 from engine.dice import Dice, SequenceSource
 from integration import IntegrationConfigError, IntegrationError, RulesSettings, build_orchestrator, build_rules_provider
 from integration.tests.test_orchestrator import BOOK, FakeDM, make_action, make_state, response
-from rules_service import HybridRulesService, RagRulesService, RulesService
+from rules_service import HybridRulesService, RagRulesService, RulesService, RulesUnavailableError
 from rules_service.tests.test_rag import ConceptEmbedder
 
 
@@ -59,6 +59,19 @@ class BuildRulesProviderTests(unittest.TestCase):
     def test_rag_mode_writes_the_index_cache(self):
         build_rules_provider(self.settings("rag"), ConceptEmbedder())
         self.assertEqual(len(list(self.cache.glob("*.npy"))), 1)
+
+    def test_missing_model_fails_fast_at_startup_even_with_a_warm_cache(self):
+        class MissingModel:
+            name = "missing"
+
+            def encode(self, texts):
+                raise RulesUnavailableError("no weights")
+
+        for mode in ("rag", "hybrid"):
+            with self.subTest(mode=mode), self.assertRaises(IntegrationConfigError) as caught:
+                build_rules_provider(self.settings(mode), MissingModel())
+            self.assertIn(f"RULES_MODE={mode}", str(caught.exception))
+            self.assertIsInstance(caught.exception.__cause__, RulesUnavailableError)
 
     def test_missing_book_file_is_a_config_error(self):
         with self.assertRaises(IntegrationConfigError):

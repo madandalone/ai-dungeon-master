@@ -2,8 +2,8 @@ import logging
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
 
+from ai_dm.errors import AIDMError, ContextBudgetError, ConfigurationError, InvalidResponseError, ProviderError
 from ai_dm.models import TurnHistoryEntry, TurnRequest, TurnResponse
 from engine import apply_action
 from engine.dice import Dice
@@ -11,22 +11,22 @@ from engine.models import EngineError, GameState, PlayerAction
 from integration.errors import DungeonMasterError, UnmappableResponse
 from integration.mapping import to_commands, to_dm_state
 from integration.ports import DungeonMaster, RulesProvider
+from rules_service.errors import RulesUnavailableError
 
 NO_RULES = "No specific rules found for this action."
 
 logger = logging.getLogger(__name__)
 
 
-def _normalize_history(history: Sequence[Any]) -> list[TurnHistoryEntry]:
-    entries = []
-    for entry in history:
-        if isinstance(entry, TurnHistoryEntry):
-            entries.append(entry)
-        elif isinstance(entry, dict):
-            entries.append(TurnHistoryEntry(**entry))
-        else:
-            raise TypeError(f"History entry must be TurnHistoryEntry or dict, got {type(entry).__name__}")
-    return entries
+def _dm_error(exc: AIDMError) -> DungeonMasterError:
+    if isinstance(exc, ProviderError):
+        return DungeonMasterError(str(exc), category=exc.category, retryable=exc.retryable, retry_after=exc.retry_after)
+    category = {
+        ContextBudgetError: "context_budget",
+        ConfigurationError: "configuration",
+        InvalidResponseError: "invalid_response",
+    }.get(type(exc), "unknown")
+    return DungeonMasterError(str(exc), category=category)
 
 
 def _elapsed_ms(started: float) -> int:
@@ -41,14 +41,15 @@ class TurnOutcome:
     errors: tuple[EngineError, ...]
     narration: str | None
     dm_notes: str | None = None  # private: Backend persists it, never sends it to the Frontend
-    rules_failed: bool = False  # the Rules Service raised; the turn was played without rules
+    rules_failed: bool = False  # the Rules Service reported RulesUnavailableError; played without rules
 
 
 class TurnOrchestrator:
     """One game turn: rules -> DM -> commands -> engine. Holds no state between turns.
 
-    Rules are auxiliary: if the Rules Service fails, the turn continues without them (logged, flagged in
-    TurnOutcome.rules_failed). A DM failure is fatal for the turn (DungeonMasterError, nothing committed).
+    Failure contract, in both directions only the declared types are handled; anything else is a bug and propagates:
+    - rules: RulesUnavailableError -> the turn continues without rules (logged, TurnOutcome.rules_failed);
+    - DM: ai_dm.errors.AIDMError -> DungeonMasterError with the DM's safe message and category, nothing committed.
     Logs carry identifiers, outcome codes and timings only - never player text, narration or the hidden plot.
     """
 
@@ -63,7 +64,7 @@ class TurnOrchestrator:
         hidden_plot: str,
         dice: Dice,
         room_context: str = "",
-        history: Sequence[Any] | None = None,
+        history: Sequence[TurnHistoryEntry] | None = None,
     ) -> TurnOutcome:
         precheck = apply_action(state, action, [], dice)
         if not precheck.accepted:
@@ -78,7 +79,7 @@ class TurnOrchestrator:
             hidden_plot=hidden_plot,
             game_state=to_dm_state(state, room_context),
             player_action=action.text,
-            history=_normalize_history(history or ()),
+            history=list(history or ()),
         )
         started = time.perf_counter()
         response = self._ask_dm(action, request)
@@ -105,7 +106,7 @@ class TurnOrchestrator:
     def _fetch_rules(self, action: PlayerAction) -> tuple[str, bool]:
         try:
             return self._rules.get_rules(action.text) or NO_RULES, False
-        except Exception:
+        except RulesUnavailableError:
             logger.warning(
                 "rules unavailable session=%s action=%s: playing the turn without rules",
                 action.session_id, action.action_id, exc_info=True,
@@ -115,11 +116,13 @@ class TurnOrchestrator:
     def _ask_dm(self, action: PlayerAction, request: TurnRequest) -> TurnResponse:
         try:
             return self._dm.process_turn(request)
-        except Exception as exc:
+        except AIDMError as exc:
+            error = _dm_error(exc)
             logger.error(
-                "dm failed session=%s action=%s error=%s", action.session_id, action.action_id, type(exc).__name__
+                "dm failed session=%s action=%s category=%s retryable=%s",
+                action.session_id, action.action_id, error.category, error.retryable,
             )
-            raise DungeonMasterError(f"Dungeon Master failed ({type(exc).__name__})") from exc
+            raise error from exc
 
     @staticmethod
     def _rejected_before_dm(action: PlayerAction, result) -> TurnOutcome:
