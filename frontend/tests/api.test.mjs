@@ -55,12 +55,22 @@ test("session state uses an encoded id and validates public data", async () => {
 
 test("turn request sends the backend contract", async () => {
   let request;
-  const result = await submitTurn("s1", { characterId: "hero", text: "Open the door" }, async (url, options) => {
+  const result = await submitTurn("s1", {
+    actionId: "action-1",
+    expectedRevision: 4,
+    characterId: "hero",
+    text: "Open the door",
+  }, async (url, options) => {
     request = { url, options };
     return response({ accepted: true, narration: "The door opens.", state: state({ session_id: "s1" }), revision: 1, turn_number: 1, errors: [] });
   });
   assert.match(request.url, /sessions\/s1\/turns$/);
-  assert.deepEqual(JSON.parse(request.options.body), { character_id: "hero", text: "Open the door" });
+  assert.deepEqual(JSON.parse(request.options.body), {
+    action_id: "action-1",
+    expected_revision: 4,
+    character_id: "hero",
+    text: "Open the door",
+  });
   assert.equal(result.turn_number, 1);
   assert.deepEqual(result.warnings, []);
 });
@@ -77,6 +87,10 @@ test("API errors distinguish missing sessions, DM failures, and network failures
   await assert.rejects(
     () => fetchSessionState("missing", async () => response({}, { ok: false, status: 404 })),
     (error) => error instanceof ApiError && error.code === "not_found" && error.status === 404,
+  );
+  await assert.rejects(
+    () => submitTurn("s1", {}, async () => response({}, { ok: false, status: 409 })),
+    (error) => error instanceof ApiError && error.code === "stale_revision" && error.status === 409,
   );
   await assert.rejects(
     () => submitTurn("s1", { characterId: "hero", text: "Go" }, async () => response({}, { ok: false, status: 502 })),

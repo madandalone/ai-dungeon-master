@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Literal, Mapping, Union
 
 
@@ -36,6 +37,13 @@ class Character:
     stats: Mapping[str, int]
     inventory: tuple[InventoryItem, ...]
 
+    def __post_init__(self):
+        object.__setattr__(self, "stats", MappingProxyType(dict(self.stats)))
+        object.__setattr__(self, "inventory", tuple(self.inventory))
+
+    def __deepcopy__(self, memo):
+        return self
+
 
 @dataclass(frozen=True)
 class GameState:
@@ -45,6 +53,13 @@ class GameState:
     location_id: str
     characters: tuple[Character, ...]
     world_flags: Mapping[str, FlagValue]
+
+    def __post_init__(self):
+        object.__setattr__(self, "characters", tuple(self.characters))
+        object.__setattr__(self, "world_flags", MappingProxyType(dict(self.world_flags)))
+
+    def __deepcopy__(self, memo):
+        return self
 
 
 @dataclass(frozen=True)

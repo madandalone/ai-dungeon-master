@@ -60,6 +60,24 @@ def quiet_dice():
 
 
 class ApplyActionTests(unittest.TestCase):
+    def test_nested_collections_are_owned_and_immutable(self):
+        source_stats = {"might": 2}
+        source_flags = {"tide": "low"}
+        hero = character(stats=source_stats)
+        original = state(characters=[hero], world_flags=source_flags)
+
+        source_stats["might"] = 99
+        source_flags["tide"] = "high"
+
+        self.assertEqual(original.characters[0].stats["might"], 2)
+        self.assertEqual(original.world_flags["tide"], "low")
+        self.assertIsInstance(original.characters, tuple)
+
+        with self.assertRaises(TypeError):
+            original.characters[0].stats["might"] = 3
+        with self.assertRaises(TypeError):
+            original.world_flags["gate"] = True
+
     def test_success_copies_state_and_advances_turn_once(self):
         original = state()
         before = copy.deepcopy(original)

@@ -17,6 +17,7 @@ export class ApiError extends Error {
 
 function errorCodeForStatus(status) {
   if (status === 404) return "not_found";
+  if (status === 409) return "stale_revision";
   if (status === 502) return "master_unavailable";
   return "http_error";
 }
@@ -98,7 +99,12 @@ export async function submitTurn(sessionId, turn, fetcher = globalThis.fetch) {
   const body = await requestJson(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/turns`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ character_id: turn.characterId, text: turn.text }),
+    body: JSON.stringify({
+      action_id: turn.actionId,
+      expected_revision: turn.expectedRevision,
+      character_id: turn.characterId,
+      text: turn.text,
+    }),
   }, fetcher);
   const valid = isObject(body)
     && typeof body.accepted === "boolean"
