@@ -90,14 +90,22 @@ def format_rules(chunks: list[RuleChunk], max_chars: int = 4000) -> str:
 
 
 class RulesService:
-    """Naive keyword retrieval (TF-IDF) over rule book chunks."""
+    """Keyword retrieval over rule book chunks, ranked with BM25.
 
-    def __init__(self, chunks: list[RuleChunk]):
+    BM25 saturates repeated words (k1) and normalises by chunk length (b), so a long section that merely
+    mentions the query words does not lose to a one-line stub. The defaults are the textbook values; they
+    were not tuned on the gold set. The chunk title counts twice, as a cheap boost for matching headings.
+    """
+
+    def __init__(self, chunks: list[RuleChunk], k1: float = 1.5, b: float = 0.75):
         self.chunks = chunks
+        self._k1, self._b = k1, b
         self._tf = [Counter(tokenize(f"{c.title} {c.title} {c.text}")) for c in chunks]
+        self._len = [sum(tf.values()) or 1 for tf in self._tf]
+        self._avg_len = sum(self._len) / len(self._len) if chunks else 1.0
         df = Counter(t for tf in self._tf for t in tf)
         n = len(chunks)
-        self._idf = {t: math.log(1 + n / d) for t, d in df.items()}
+        self._idf = {t: math.log(1 + (n - d + 0.5) / (d + 0.5)) for t, d in df.items()}
 
     @classmethod
     def from_text(cls, text: str) -> "RulesService":
@@ -110,9 +118,9 @@ class RulesService:
     def search(self, query: str, top_k: int = 3) -> list[RuleChunk]:
         terms = set(tokenize(query))
         scored = []
-        for chunk, tf in zip(self.chunks, self._tf):
-            total = sum(tf.values()) or 1
-            score = sum(tf[t] / total * self._idf[t] for t in terms if t in tf)
+        for chunk, tf, length in zip(self.chunks, self._tf, self._len):
+            norm = self._k1 * (1 - self._b + self._b * length / self._avg_len)
+            score = sum(self._idf[t] * tf[t] * (self._k1 + 1) / (tf[t] + norm) for t in terms if t in tf)
             if score > 0:
                 scored.append((score, chunk))
         scored.sort(key=lambda s: s[0], reverse=True)

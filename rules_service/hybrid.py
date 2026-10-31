@@ -12,7 +12,7 @@ CANDIDATE_MULTIPLIER = 3
 
 
 class HybridRulesService:
-    """Rank fusion of keyword (TF-IDF) and semantic (RAG) retrieval.
+    """Rank fusion of keyword (BM25) and semantic (RAG) retrieval.
 
     Keyword search is strong for exact terms like "1d6" or named spells.
     RAG is strong for cross-language and paraphrase queries.
