@@ -37,7 +37,7 @@ TurnOrchestrator
     `-- Game Engine: validate and apply commands atomically
     |
     v
-Backend: persist accepted state and private history in memory
+Backend: persist accepted state and private history in SQLite
     |
     `-- Return accepted, narration, public state, revision,
         turn_number and structured errors to Frontend
@@ -52,10 +52,11 @@ If rules retrieval fails, the orchestrator can continue using a fallback rules s
 | GET | `/health` | Basic Backend health check; returns `{"status":"ok"}` |
 | POST | `/sessions` | Create a named session and initial GameState |
 | GET | `/sessions/{session_id}/state` | Return the public state projection |
+| POST | `/sessions/{session_id}/characters` | Add a character and return updated public state |
 | POST | `/sessions/{session_id}/actions` | Direct Engine action with explicit `health_delta` (development/test path) |
 | POST | `/sessions/{session_id}/turns` | Natural-language turn through Rules Service, AI DM and Engine |
 
-`POST /sessions` currently creates a hardcoded `Hero` character (10/10 HP, strength 2) at location `start`, revision 0, turn 0. There is no user authentication or character-creation endpoint yet.
+`POST /sessions` creates a starter `Hero` character (10/10 HP, strength 2) at location `start`, revision 0, turn 0. The Frontend can add more characters through the character endpoint. Character creation increments the state revision without consuming a game turn.
 
 The `/turns` request body is:
 
@@ -67,12 +68,13 @@ The successful response includes `accepted`, `narration`, `state`, `revision`, `
 
 ## State, history and privacy
 
-- The Backend currently stores sessions, GameState and turn history in process-memory dictionaries. Restarting the server deletes them. The browser may still hold a cached session ID; a request for it then returns HTTP 404.
+- The Backend keeps active sessions in memory and persists their authoritative state and private history in SQLite. A session is restored from SQLite when it is requested after a restart.
 - `GameState` is the authoritative source for characters, HP, inventory, location, revision and turn number.
 - The Engine increments revision and turn number once for an accepted action; rejected actions do not change them.
 - The DM response can include private `dm_thoughts`; Backend history can retain them as `dm_notes`. These must never be included in public API projections or the Frontend log.
 - The public projection is created with `to_public_dict(...)`, which exposes an allowlisted subset of state.
-- There is no persistent database, cross-process transaction, public history endpoint or durable replay yet.
+- `GET /state` rebuilds the public chronicle from stored history and excludes private `dm_notes`.
+- Idempotency data remains process-local, so replay protection does not survive a Backend restart.
 
 ## Local development
 
@@ -117,19 +119,20 @@ Verified locally:
 - Rules Service keyword lookup returns matching rule text.
 - The real DM integration is invoked from the `/turns` path.
 - Missing sessions return 404; provider failures return 502 rather than committing a turn.
+- Sessions, characters and accepted turn history survive a Backend restart through SQLite.
+- Character creation validates revisions and does not consume a game turn.
+- Public history is restored without exposing private DM notes.
 
 Not yet verified:
 
 - Successful real LLM-generated turn. A direct Hugging Face Router call returned **HTTP 402 (Payment Required)**, and the integrated request returned HTTP 502 (`ProviderError`). This is a provider/quota issue, not evidence of successful gameplay.
-- Persistence across restarts, concurrent turn serialization, and public history synchronization.
 
 ## Known limitations and next steps
 
 1. Improve startup/configuration checks and return actionable, sanitized provider errors without exposing tokens or private prompts.
-2. Make Frontend gracefully handle stale session IDs after Backend restarts.
-3. Add or extend integration tests using fake DM and Rules Service; these should run without external API credits.
-4. Add durable session/history storage and concurrency-safe state updates.
-5. Provide public history without exposing `dm_notes`; extend component health reporting when readiness checks are implemented.
-6. Verify a complete real LLM turn when provider access is available.
+2. Add a session-list endpoint if users must discover sessions without keeping their IDs.
+3. Extend component health reporting with DM, Rules Service and history readiness.
+4. Move from process-local idempotency to durable action records before multi-process deployment.
+5. Verify a complete real LLM turn when provider access is available.
 
 Related documentation: `docs/implementation.md`, `docs/turn_orchestration.md`, `docs/rules_service.md`.

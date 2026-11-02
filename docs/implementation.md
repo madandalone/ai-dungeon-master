@@ -453,27 +453,17 @@ cover the current turn orchestration separately.
 
 Backend ownership:
 
-- merge the turn endpoint and allow the Frontend development origins on ports
-  4173 and 5500 through CORS;
 - extend `GET /health` with the public `components.dm`, `components.rules`, and
   `components.history` statuses described above;
-- build the real orchestrator once at application startup instead of creating
-  fake DM and rules providers per request;
-- pass a sanitized public chronicle into `to_public_dict(..., log=...)`; every
-  entry must contain only `kind`, `character_id`, and `text`;
-- add `POST /sessions/{id}/characters` for the existing form and return the
-  updated public state after creation;
-- return stable public `errors` and `warnings` without raw provider messages.
+- persist idempotency keys if the Backend is deployed in multiple processes;
+- add session listing or deletion only when the product needs those flows.
 
 Rules and integration ownership:
 
-- wire `build_orchestrator()` into Backend after the rules-wiring branch is
-  merged;
-- surface a rules outage only as a safe `RULES_UNAVAILABLE` warning;
-- keep the turn accepted when Rules Service is optional and unavailable, so
-  the Frontend can render the yellow limited-mode notice;
+- keep a Rules Service outage as a safe `RULES_UNAVAILABLE` warning;
 - keep retrieved rule text, embeddings, and internal logs outside the public
-  response.
+  response;
+- extend the evaluation set when new rule books are added.
 
 AI Dungeon Master ownership:
 
@@ -484,19 +474,13 @@ AI Dungeon Master ownership:
 
 ## Current Limitations
 
-- Backend session state and private turn history are process-local and
-  disappear on restart.
-- Backend still uses fake DM and rules providers until the integration factory
-  is wired in.
-- The current CORS list includes port 5500 but not the documented port 4173.
-- There is no authoritative character-creation endpoint.
-- Public turn history is not available from Backend, so the browser chronicle
-  survives only in the current tab.
+- SQLite persists sessions, state, characters and history, but is intended for
+  the local single-process prototype.
+- Idempotency keys remain process-local and are lost after a restart.
+- Sessions can be restored by ID, but there is no server-side session list.
 - Combat is limited to generic HP adjustment and skill checks; there is no
   initiative, action economy, conditions, armor, or encounter model.
 - There is no multiplayer identity, authorization, turn ownership, locking,
   push update, or reconnect protocol.
 - There is no item/location/stat rules catalog.
 - Command, event, error, and public-state JSON schemas are not versioned.
-- The Frontend sends stable retry metadata, but idempotent `action_id` storage
-  and compare-and-swap revision handling are not implemented by the Backend.

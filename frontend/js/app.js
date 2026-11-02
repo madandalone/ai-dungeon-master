@@ -1,4 +1,6 @@
-import { ApiError, createSession, fetchHealth, fetchSessionState, submitTurn } from "./api.js";
+import {
+  ApiError, createCharacter, createSession, fetchHealth, fetchSessionState, submitTurn,
+} from "./api.js";
 import { SETTINGS_KEY, applyTranslations, getLanguage, initLanguage, setLanguage, t } from "./i18n.js";
 import {
   activateSession, activePublicState, emptyPublicState, loadSessionStore, putSession, saveSessionStore,
@@ -88,6 +90,7 @@ let currentSection = ["game", "characters", "world", "session"].includes(readUiS
   ? readUiSettings().activeSection : "game";
 let backendState = "checking";
 let selectedCharacterId = "";
+let characterPending = false;
 let turnPending = false;
 let pendingTurnAttempt = null;
 let actionFeedback = null;
@@ -188,11 +191,15 @@ function renderControls() {
   const state = currentState();
   setFormDisabled(elements.createSessionForm, !canReachBackend());
   setFormDisabled(elements.joinSessionForm, !canReachBackend());
-  setFormDisabled(elements.characterForm, true);
+  const canCreateCharacter = canReachBackend() && state?.connection === "server" && !characterPending;
+  setFormDisabled(elements.characterForm, !canCreateCharacter);
   setFormDisabled(elements.actionForm, !canPlay(state) || turnPending);
-  elements.addStat.disabled = true;
-  elements.characterFormNotice.textContent = state?.connection === "server"
-    ? t("characters.serverManaged") : t("characters.localReadOnly");
+  elements.addStat.disabled = !canCreateCharacter;
+  elements.characterFormNotice.textContent = characterPending
+    ? t("characters.creating")
+    : canCreateCharacter
+      ? t("characters.ready")
+      : t("characters.localReadOnly");
   if (!state) elements.actionHint.textContent = t("game.noSession");
   else if (!state.characters.length) elements.actionHint.textContent = t("game.noCharacters");
   else if (!canReachBackend()) elements.actionHint.textContent = t("offline.body");
@@ -675,9 +682,54 @@ elements.joinSessionForm.addEventListener("submit", async (event) => {
 });
 
 elements.addStat.addEventListener("click", () => addStatRow());
-elements.characterForm.addEventListener("submit", (event) => {
+elements.characterForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  elements.characterMessage.textContent = t("characters.serverManaged");
+  const state = currentState();
+  const name = elements.characterName.value.trim();
+  const maxHp = Number(elements.characterHp.value);
+  if (!state || state.connection !== "server" || characterPending) return;
+  if (!name || !Number.isInteger(maxHp) || maxHp < 1) {
+    elements.characterMessage.textContent = t("characters.invalid");
+    return;
+  }
+
+  characterPending = true;
+  elements.characterMessage.textContent = t("characters.creating");
+  renderControls();
+  try {
+    const snapshot = await createCharacter(state.session_id, {
+      expectedRevision: state.revision,
+      name,
+      concept: elements.characterConcept.value.trim(),
+      maxHp,
+      stats: readStats(),
+      startingItem: elements.startingItem.value.trim(),
+    });
+    const previousIds = new Set(state.characters.map((character) => character.id));
+    const created = snapshot.characters.find((character) => !previousIds.has(character.id));
+    store = putSession(store, mergeServerState(state, snapshot));
+    selectedCharacterId = created?.id || selectedCharacterId;
+    persistStore();
+    elements.characterForm.reset();
+    elements.characterHp.value = "10";
+    elements.statRows.replaceChildren();
+    addStatRow();
+    elements.characterMessage.textContent = t("characters.created", { name });
+  } catch (error) {
+    if (error instanceof ApiError && error.code === "network_error") {
+      backendState = "offline";
+      componentStates = { ...componentStates, backend: "offline" };
+    }
+    if (error instanceof ApiError && error.code === "stale_revision") {
+      await refreshSession(state.session_id, state.session_name);
+      elements.characterMessage.textContent = t("characters.stale");
+    } else {
+      elements.characterMessage.textContent = t("characters.createError");
+    }
+  } finally {
+    characterPending = false;
+    renderAll();
+  }
 });
 
 elements.actingCharacter.addEventListener("change", () => {
