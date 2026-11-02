@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from ai_dm.models import TurnHistoryEntry
 from engine.models import Character, GameState, InventoryItem
-from contextlib import contextmanager
-from collections.abc import Iterator
+
 
 class SQLiteSessionStore:
     """Small synchronous store; each operation owns its connection and transaction."""
@@ -159,6 +160,7 @@ class SQLiteSessionStore:
                     session_id,
                     position,
                     json.dumps({
+                        "character_id": entry.character_id,
                         "player_action": entry.player_action,
                         "narrative": entry.narrative,
                         "dm_notes": entry.dm_notes,

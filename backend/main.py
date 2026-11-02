@@ -1,22 +1,20 @@
 
-from uuid import uuid4
 import os
+from functools import lru_cache
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from uuid import uuid4
 
-from engine import apply_action, to_public_dict
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+from ai_dm.models import StateDelta, TurnHistoryEntry, TurnRequest, TurnResponse
+from backend.storage import SQLiteSessionStore
+from engine import add_character, apply_action, to_public_dict
 from engine.commands import AdjustHealth
 from engine.dice import Dice, LocalRandomSource
-from engine.models import Character, GameState, PlayerAction
+from engine.models import Character, GameState, InventoryItem, PlayerAction
 from integration import IntegrationError, TurnOrchestrator
-from ai_dm.models import StateDelta, TurnRequest, TurnResponse
-from fastapi.middleware.cors import CORSMiddleware
-from ai_dm.models import TurnHistoryEntry
-from functools import lru_cache
-
-from backend.storage import SQLiteSessionStore
-from fastapi import Depends
 from integration.factory import build_orchestrator
 from integration.turns import IdempotentExecutor, make_player_action
 
@@ -50,6 +48,15 @@ class PlayerTurnRequest(BaseModel):
     text: str
     action_id: str | None = None
     expected_revision: int | None = None
+
+
+class CharacterCreateRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    name: str = Field(min_length=1, max_length=60)
+    concept: str = Field(default="", max_length=120)
+    max_hp: int = Field(ge=1, le=999)
+    stats: dict[str, int] = Field(default_factory=dict)
+    starting_item: str = Field(default="", max_length=60)
 
 
 class FakeRulesProvider:
@@ -119,11 +126,13 @@ def create_session(session_data: GameSessionCreate):
     )
     game_histories[session.id] = []
     get_session_store().save_session(
-    session.id,
-    session.name,
-    game_states[session.id],
-)
+        session.id,
+        session.name,
+        game_states[session.id],
+    )
     return session
+
+
 @lru_cache(maxsize=1)
 def get_session_store() -> SQLiteSessionStore:
     db_path = Path(os.getenv("GAME_DB_PATH", "data/game_sessions.db"))
@@ -145,13 +154,84 @@ def ensure_session_loaded(session_id: str) -> None:
     game_states[session_id] = state
     game_histories[session_id] = history
 
-@app.get("/sessions/{session_id}/state")
-def get_session_state(session_id: str):
-    ensure_session_loaded(session_id)
+
+def public_state(session_id: str, include_history: bool = True) -> dict:
+    history = game_histories[session_id]
+    log = []
+    if include_history:
+        for entry in history:
+            log.append({
+                "kind": "player",
+                "character_id": entry.character_id,
+                "text": entry.player_action,
+            })
+            if entry.narrative.strip():
+                log.append({
+                    "kind": "master",
+                    "character_id": "",
+                    "text": entry.narrative,
+                })
     return to_public_dict(
         game_states[session_id],
         session_name=sessions[session_id].name,
+        log=log,
     )
+
+@app.get("/sessions/{session_id}/state")
+def get_session_state(session_id: str):
+    ensure_session_loaded(session_id)
+    return public_state(session_id)
+
+
+@app.post("/sessions/{session_id}/characters")
+def create_character(session_id: str, character_data: CharacterCreateRequest):
+    operation_id = str(uuid4())
+
+    def execute_creation():
+        ensure_session_loaded(session_id)
+        item_name = character_data.starting_item.strip()
+        inventory = ()
+        if item_name:
+            inventory = (
+                InventoryItem(
+                    item_id=str(uuid4()),
+                    name=item_name,
+                    quantity=1,
+                ),
+            )
+        character = Character(
+            id=str(uuid4()),
+            name=character_data.name.strip(),
+            concept=character_data.concept.strip(),
+            hp=character_data.max_hp,
+            max_hp=character_data.max_hp,
+            stats={name.strip(): value for name, value in character_data.stats.items()},
+            inventory=inventory,
+        )
+        result = add_character(
+            game_states[session_id],
+            character,
+            character_data.expected_revision,
+        )
+        if not result.accepted:
+            error = result.errors[0]
+            status = 409 if error.code == "STALE_REVISION" else 422
+            raise HTTPException(
+                status_code=status,
+                detail={"code": error.code, "message": error.message},
+            )
+
+        get_session_store().save_state(session_id, result.state)
+        game_states[session_id] = result.state
+        return public_state(session_id)
+
+    response, _ = turn_executor.run(
+        session_id,
+        operation_id,
+        execute_creation,
+        remember=lambda result: False,
+    )
+    return response
 
 
 @app.post("/sessions/{session_id}/actions")
@@ -188,10 +268,7 @@ def process_action(session_id: str, action_data: PlayerActionRequest):
 
         return {
             "accepted": result.accepted,
-            "state": to_public_dict(
-                result.state,
-                session_name=sessions[session_id].name,
-            ),
+            "state": public_state(session_id, include_history=False),
             "revision": result.state.revision,
             "turn_number": result.state.turn_number,
             "errors": [
@@ -243,6 +320,7 @@ def process_turn(
 
         if outcome.accepted:
             entry = TurnHistoryEntry(
+                character_id=turn_data.character_id,
                 player_action=turn_data.text,
                 narrative=outcome.narration or "",
                 dm_notes=outcome.dm_notes or "",
@@ -260,10 +338,7 @@ def process_turn(
         return {
             "accepted": outcome.accepted,
             "narration": outcome.narration,
-            "state": to_public_dict(
-                outcome.state,
-                session_name=sessions[session_id].name,
-            ),
+            "state": public_state(session_id, include_history=False),
             "revision": outcome.state.revision,
             "turn_number": outcome.state.turn_number,
             "errors": [
@@ -272,7 +347,7 @@ def process_turn(
             ],
         }
 
-    result, replayed = turn_executor.run(
+    result, _replayed = turn_executor.run(
         session_id,
         action_id,
         execute_turn,

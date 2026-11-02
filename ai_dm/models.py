@@ -16,6 +16,7 @@ class GameState(BaseModel):
 class TurnHistoryEntry(BaseModel):
     """Один принятый ход; dm_notes доступны только мастеру."""
 
+    character_id: str = ""
     player_action: str
     narrative: str
     dm_notes: str = ""
