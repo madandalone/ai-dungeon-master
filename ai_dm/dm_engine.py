@@ -23,10 +23,10 @@ from ai_dm.models import (
 )
 from ai_dm.provider import RetryPolicy, provider_error, without_sdk_retries
 from ai_dm.prompts import PromptTemplates
+from ai_dm.memory import select_history
 from ai_dm.validation import validate_campaign, validate_turn
 
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
-HISTORY_LIMIT = 10
 
 
 def _create_client() -> OpenAI:
@@ -179,11 +179,11 @@ class AIDungeonMaster:
     def process_turn(self, request: TurnRequest) -> TurnResponse:
         """Предлагает последствия хода; применяет их только Game Engine."""
         templates = PromptTemplates.load()
-        history = [entry.model_dump() for entry in request.history[-HISTORY_LIMIT:]]
+        history = select_history(request)
         return self._generate(
             partial(templates.turn_prompt, request, history), TurnResponse,
             validate_response=partial(validate_turn, request=request),
-            templates=templates, history_count=len(history),
+            templates=templates, history_count=history.count,
         )
 
 
