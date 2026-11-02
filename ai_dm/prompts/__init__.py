@@ -1,13 +1,13 @@
 """Load prompt templates relative to this package, once per generation operation."""
 
 import json
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from string import Template
 
 from ai_dm.errors import ConfigurationError
 from ai_dm.models import CampaignStartRequest, TurnRequest
+from ai_dm.memory import HistorySelection
 
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent
@@ -60,12 +60,14 @@ class PromptTemplates:
             monster_stats=json.dumps(monster_stats, ensure_ascii=False) if monster_stats else "Базовый противник",
         )
 
-    def turn_prompt(self, request: TurnRequest, history: Sequence[dict[str, str]], count: int) -> str:
+    def turn_prompt(self, request: TurnRequest, history: HistorySelection, count: int) -> str:
+        recent, memories = history.blocks(count)
         return self._render(
             "turn",
             rules_summary=request.rules_summary,
             hidden_plot=request.hidden_plot,
-            history=json.dumps(history[-count:] if count else [], ensure_ascii=False),
+            history=json.dumps(recent, ensure_ascii=False),
+            memories=json.dumps(memories, ensure_ascii=False),
             location=request.game_state.location,
             room_context=request.game_state.room_context,
             characters=json.dumps([c.model_dump() for c in request.game_state.active_characters], ensure_ascii=False),
