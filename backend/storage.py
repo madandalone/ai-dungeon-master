@@ -10,7 +10,8 @@ from typing import Any
 
 from ai_dm.models import TurnHistoryEntry
 from engine.models import Character, GameState, InventoryItem
-
+from contextlib import contextmanager
+from collections.abc import Iterator
 
 class SQLiteSessionStore:
     """Small synchronous store; each operation owns its connection and transaction."""
@@ -19,10 +20,15 @@ class SQLiteSessionStore:
         self.database_path = str(database_path)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.database_path, timeout=10)
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -159,3 +165,22 @@ class SQLiteSessionStore:
                     }, ensure_ascii=False),
                 ),
             )
+
+    def save_state(self, session_id: str, state: GameState) -> None:
+        """Persist a state change without adding a DM history entry."""
+        if state.session_id != session_id:
+            raise ValueError("Session ID does not match state")
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE game_states SET payload = ? "
+                "WHERE session_id = ? "
+                "AND json_extract(payload, '$.revision') = ?",
+                (
+                    self._state_to_json(state),
+                    session_id,
+                    state.revision - 1,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Session not found or unexpected revision")
