@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  ApiError, createSession, fetchHealth, fetchSessionState, resolveApiBase, submitTurn,
+  ApiError, createCharacter, createSession, fetchHealth, fetchSessionState, resolveApiBase, submitTurn,
 } from "../js/api.js";
 
 function response(body, { ok = true, status = 200 } = {}) {
@@ -49,6 +49,36 @@ test("session state uses an encoded id and validates public data", async () => {
   await assert.rejects(() => fetchSessionState("bad", async () => response({ session_id: "bad" })), /invalid_response/);
   await assert.rejects(
     () => fetchSessionState("missing-turn", async () => response(state({ turn_number: undefined }))),
+    /invalid_response/,
+  );
+});
+
+test("character creation sends setup data and validates the new state", async () => {
+  let request;
+  const result = await createCharacter("session/1", {
+    expectedRevision: 3,
+    name: "Элиас",
+    concept: "Плут",
+    maxHp: 12,
+    stats: { "ловкость": 3 },
+    startingItem: "кинжал",
+  }, async (url, options) => {
+    request = { url, options };
+    return response(state({ revision: 4 }));
+  });
+
+  assert.match(request.url, /sessions\/session%2F1\/characters$/);
+  assert.deepEqual(JSON.parse(request.options.body), {
+    expected_revision: 3,
+    name: "Элиас",
+    concept: "Плут",
+    max_hp: 12,
+    stats: { "ловкость": 3 },
+    starting_item: "кинжал",
+  });
+  assert.equal(result.revision, 4);
+  await assert.rejects(
+    () => createCharacter("s1", {}, async () => response({ session_id: "s1" })),
     /invalid_response/,
   );
 });

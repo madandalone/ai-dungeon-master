@@ -96,6 +96,13 @@ class TestPersistenceAPI(unittest.TestCase):
             f"/sessions/{session_id}/state"
         )
         self.assertEqual(response.status_code, 200)
+        public_log = response.json()["log"]
+        self.assertEqual(
+            [entry["kind"] for entry in public_log],
+            ["player", "master"],
+        )
+        self.assertEqual(public_log[0]["text"], "Я открываю дверь")
+        self.assertNotIn("dm_notes", response.text)
 
         restored = self.store.load_session(session_id)
         self.assertIsNotNone(restored)

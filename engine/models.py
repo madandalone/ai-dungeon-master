@@ -15,6 +15,7 @@ ErrorCode = Literal[
     "INVALID_STAT",
     "INVALID_ITEM",
     "INVALID_LOCATION",
+    "DUPLICATE_CHARACTER",
 ]
 
 FlagValue = Union[bool, int, str]
