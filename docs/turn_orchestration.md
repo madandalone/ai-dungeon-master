@@ -196,17 +196,78 @@ turn session=s1 action=a1 accepted=True errors=- commands=2 rules_failed=False r
 не попадают (проверено тестом). Уровни: `INFO` - ход, `WARNING` - недоступные правила, `ERROR` - сбой DM
 (в строке `category` и `retryable`, без текста) и неразрешимый ответ.
 
-## Тесты
+## Повторы и параллельные ходы
 
-`python -m unittest discover -s integration/tests -t .` - 40 тестов с реальным движком и реальным
-`RulesService`/`RagRulesService`, DM заменён заглушкой `FakeDM`:
-- оркестратор: применение изменений, контекст для DM (правила, сюжет, состояние, история), отсечка
-  устаревшей ревизии без вызова LLM, отбрасывание нарратива при отказе движка, неизвестный персонаж,
-  подмена keyword-поиска на RAG;
-- фабрика: настройки из окружения, все режимы правил, кэш индекса, ошибки конфигурации;
-- устойчивость: недоступные правила и немаскируемые баги, категории ошибок DM, отсутствие секретов
-  в логах;
-- фабрика: быстрый отказ при старте, если модель эмбеддингов недоступна.
+Фронтенд теперь шлёт в `POST /sessions/{id}/turns` поля `action_id` и `expected_revision`, при повторе
+того же хода сохраняет тот же `action_id` и обрабатывает HTTP 409 как устаревшую ревизию. Backend пока
+читает только `character_id` и `text`, а `action_id` и ревизию генерирует сам. Проверено на настоящем
+маршруте (DM-заглушка со счётчиком вызовов):
+
+| Сценарий | Что происходит сейчас | Ожидается |
+|---|---|---|
+| Клиент повторил тот же ход (`action_id` одинаковый, например после обрыва сети) | 2 вызова LLM, ревизия 1 -> 2, HP 9 -> 8 | один вызов LLM, ход применён один раз |
+| `expected_revision=0`, а сессия уже на ревизии 2 | 200, `accepted=true` | 409 `STALE_REVISION` без вызова LLM |
+| Два игрока одновременно | оба `accepted=true`, итоговое HP 9 при двух принятых ходах (потерянное обновление) | один принят, второй получает 409 |
+
+Для этого в `integration/turns.py` два небольших инструмента; Backend остаётся владельцем состояния.
+
+- `make_player_action(state, character_id, text, action_id, expected_revision)` строит `PlayerAction` из
+  данных клиента: присланные `action_id` и `expected_revision` сохраняются (поэтому устаревшего клиента
+  отклоняет сам Engine кодом `STALE_REVISION`, до вызова LLM), клиент без этих полей считается
+  актуальным и получает новый id.
+- `IdempotentExecutor.run(session_id, key, fn, remember)` выполняет `fn` под блокировкой сессии: загрузка
+  состояния, ход и сохранение внутри `fn` атомарны относительно других ходов этой сессии, а разные
+  сессии друг друга не блокируют. Если `key` уже дал сохранённый результат, `fn` не вызывается и
+  возвращается прежний результат (`replayed=True`).
+
+Что запоминается: только результаты с `remember(result) == True`, то есть принятые (применённые) ходы.
+Отклонённый ход ничего не менял и после обновления ревизии может пройти; сбой DM (исключение) ничего не
+сохраняет и снимает блокировку, поэтому повтор с тем же `action_id` выполнится заново. На сессию
+хранится не больше 256 последних результатов, всё в памяти процесса.
+
+Контракт зафиксирован тестами `integration/tests/test_turn_protocol.py` (полный цикл с настоящим
+Engine, оркестратором и параллельными потоками). Так мог бы выглядеть обработчик в Backend:
+
+```python
+executor = IdempotentExecutor()
+
+class PlayerTurnRequest(BaseModel):
+    character_id: str
+    text: str
+    action_id: str | None = None
+    expected_revision: int | None = None
+
+@app.post("/sessions/{session_id}/turns")
+def process_turn(session_id: str, turn: PlayerTurnRequest, orchestrator: TurnOrchestrator = Depends(get_orchestrator)):
+    if session_id not in game_states:
+        raise HTTPException(404, "Session not found")
+
+    def play() -> dict:
+        state = game_states[session_id]                      # читаем состояние уже под блокировкой
+        action = make_player_action(state, turn.character_id, turn.text, turn.action_id, turn.expected_revision)
+        try:
+            outcome = orchestrator.play_turn(state, action, hidden_plot, Dice(LocalRandomSource()),
+                                             history=game_histories[session_id])
+        except IntegrationError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        if outcome.accepted:
+            game_states[session_id] = outcome.state
+            game_histories[session_id].append(TurnHistoryEntry(player_action=turn.text,
+                narrative=outcome.narration or "", dm_notes=outcome.dm_notes or ""))
+        return {"accepted": outcome.accepted, "narration": outcome.narration, "revision": outcome.state.revision,
+                "state": to_public_dict(outcome.state, session_name=sessions[session_id].name),
+                "turn_number": outcome.state.turn_number,
+                "errors": [{"code": e.code, "message": e.message} for e in outcome.errors]}
+
+    body, _replayed = executor.run(session_id, turn.action_id or str(uuid4()), play, remember=lambda b: b["accepted"])
+    if any(e["code"] == "STALE_REVISION" for e in body["errors"]):
+        raise HTTPException(409, detail=body)                # фронтенд разбирает 409 как stale_revision
+    return body
+```
+
+Граница: блокировка и память действуют внутри одного процесса. Состояние сейчас тоже лежит в памяти
+процесса, поэтому этого достаточно; при переходе на БД и несколько воркеров защита от гонок должна
+переехать в сравнение-и-запись по `revision` на стороне хранилища (см. `docs/integration.md`).
 
 ## Как Backend подключён сейчас и что стоит поправить
 
@@ -227,10 +288,24 @@ turn session=s1 action=a1 accepted=True errors=- commands=2 rules_failed=False r
 - Сообщение `DungeonMasterError` можно отдавать клиенту как есть (оно безопасно), а по `category` выбирать
   статус (таблица выше); сейчас любая ошибка DM - 502.
 
+## Тесты
+
+`python -m unittest discover -s integration/tests -t .` - 63 теста с реальным движком и реальным
+`RulesService`/`RagRulesService`, DM заменён заглушкой `FakeDM`:
+- оркестратор: применение изменений, контекст для DM (правила, сюжет, состояние, история), отсечка
+  устаревшей ревизии без вызова LLM, отбрасывание нарратива при отказе движка, неизвестный персонаж,
+  подмена keyword-поиска на RAG;
+- фабрика: настройки из окружения, все режимы правил, кэш индекса, ошибки конфигурации;
+- устойчивость: недоступные правила и немаскируемые баги, категории ошибок DM, отсутствие секретов
+  в логах;
+- фабрика: быстрый отказ при старте, если модель эмбеддингов недоступна;
+- протокол хода: повтор с тем же `action_id`, устаревшая ревизия, гонка двух игроков, гонка повтора с оригиналом;
+- `IdempotentExecutor`: повтор, границы запоминания, исключения, независимость сессий, отсутствие пересечений.
+
 ## Что остаётся Backend и не реализовано
 
-Загрузка/сохранение состояния и compare-and-swap, идемпотентность по `action_id`, сохранение seed
-кубиков (см. `docs/integration.md`). Адаптер намеренно не решает эти задачи, чтобы не залезать в зону Backend.
+Загрузка/сохранение состояния и compare-and-swap в хранилище, сохранение seed кубиков (см.
+`docs/integration.md`); подключение `IdempotentExecutor` в обработчик хода (см. выше). Адаптер намеренно не решает эти задачи, чтобы не залезать в зону Backend.
 
 ## Известные риски
 

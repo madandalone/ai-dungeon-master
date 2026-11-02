@@ -115,8 +115,10 @@ class GoldSetTests(unittest.TestCase):
     def test_keyword_baseline_is_blind_to_russian_but_finds_exact_terms(self):
         report = evaluate(RulesService.from_file(BOOK_FILE), load_cases())
         self.assertEqual(report.recall_at(5, "ru"), 0.0)
-        self.assertGreaterEqual(report.recall_at(5, "term"), 0.75)
-        self.assertGreaterEqual(report.recall_at(5, "en"), 0.75)
+        self.assertGreaterEqual(report.recall_at(5, "term"), 0.85)
+        self.assertGreaterEqual(report.recall_at(5, "en"), 0.95)
+        self.assertGreaterEqual(report.recall_at(1, "en"), 0.75)
+        self.assertGreaterEqual(report.mrr("en"), 0.8)
 
 
 if __name__ == "__main__":
