@@ -6,6 +6,7 @@ from engine.dice import Dice, SequenceSource
 from integration import IntegrationConfigError, IntegrationError, RulesSettings, build_orchestrator, build_rules_provider
 from integration.tests.test_orchestrator import BOOK, FakeDM, make_action, make_state, response
 from rules_service import HybridRulesService, RagRulesService, RulesService, RulesUnavailableError
+from rules_service.lexicon import LexiconRulesService
 from rules_service.tests.test_rag import ConceptEmbedder
 
 
@@ -22,6 +23,13 @@ class SettingsTests(unittest.TestCase):
             "RULES_BOOK_PATH": "b.md", "RULES_MODE": " Hybrid ", "RULES_CACHE_DIR": "c", "RULES_EMBEDDING_MODEL": "m",
         })
         self.assertEqual((settings.mode, settings.cache_dir, settings.embedding_model), ("hybrid", Path("c"), "m"))
+
+    def test_lexicon_is_on_by_default_and_can_be_switched_off(self):
+        base = {"RULES_BOOK_PATH": "b.md"}
+        self.assertTrue(RulesSettings.from_env(base).lexicon)
+        for value in ("0", "false", "No", " OFF "):
+            self.assertFalse(RulesSettings.from_env({**base, "RULES_LEXICON": value}).lexicon, value)
+        self.assertTrue(RulesSettings.from_env({**base, "RULES_LEXICON": "1"}).lexicon)
 
     def test_missing_book_path_is_a_config_error(self):
         with self.assertRaises(IntegrationConfigError):
@@ -48,9 +56,13 @@ class BuildRulesProviderTests(unittest.TestCase):
 
     def test_each_mode_builds_the_matching_provider(self):
         embedder = ConceptEmbedder()
-        self.assertIsInstance(build_rules_provider(self.settings("keyword")), RulesService)
+        self.assertIsInstance(build_rules_provider(self.settings("keyword")), LexiconRulesService)
         self.assertIsInstance(build_rules_provider(self.settings("rag"), embedder), RagRulesService)
         self.assertIsInstance(build_rules_provider(self.settings("hybrid"), embedder), HybridRulesService)
+
+    def test_the_lexicon_setting_reaches_the_built_provider(self):
+        self.assertIsInstance(build_rules_provider(RulesSettings(self.book, "keyword")), LexiconRulesService)
+        self.assertIsInstance(build_rules_provider(RulesSettings(self.book, "keyword", lexicon=False)), RulesService)
 
     def test_keyword_mode_needs_no_embedder_or_cache(self):
         build_rules_provider(self.settings("keyword"))

@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from ai_dm.models import TurnRequest, TurnResponse
+from ai_dm.models import CampaignStartRequest, CampaignStartResponse, TurnRequest, TurnResponse
 
 
 class RulesProvider(Protocol):
@@ -15,6 +15,14 @@ class RulesProvider(Protocol):
 class DungeonMaster(Protocol):
     def process_turn(self, request: TurnRequest) -> TurnResponse:
         """Propose the outcome of one player action. Output is untrusted.
+
+        Raise ai_dm.errors.AIDMError (or a subclass) for expected failures; other exceptions propagate as bugs.
+        """
+
+
+class CampaignMaster(Protocol):
+    def generate_campaign_start(self, request: CampaignStartRequest) -> CampaignStartResponse:
+        """Create the hidden plot and the opening scene for the given characters.
 
         Raise ai_dm.errors.AIDMError (or a subclass) for expected failures; other exceptions propagate as bugs.
         """

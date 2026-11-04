@@ -1,3 +1,6 @@
+from ai_dm.errors import AIDMError, ConfigurationError, ContextBudgetError, InvalidResponseError, ProviderError
+
+
 class IntegrationError(Exception):
     """Turn could not be processed. Nothing was committed; Backend should answer 5xx/502."""
 
@@ -18,8 +21,28 @@ class DungeonMasterError(IntegrationError):
         self.retry_after = retry_after
 
 
+def dungeon_master_error(exc: AIDMError) -> DungeonMasterError:
+    """Translate the DM's own error into the integration error, keeping its safe message and metadata."""
+    if isinstance(exc, ProviderError):
+        return DungeonMasterError(str(exc), category=exc.category, retryable=exc.retryable, retry_after=exc.retry_after)
+    category = {
+        ContextBudgetError: "context_budget",
+        ConfigurationError: "configuration",
+        InvalidResponseError: "invalid_response",
+    }.get(type(exc), "unknown")
+    return DungeonMasterError(str(exc), category=category)
+
+
 class UnmappableResponse(IntegrationError):
     """DM response refers to characters that cannot be resolved to engine character IDs."""
+
+
+class CampaignRejected(IntegrationError):
+    """The Engine refused to enter the opening scene. Nothing was committed; `errors` holds the Engine's codes."""
+
+    def __init__(self, message: str, errors: tuple = ()):
+        super().__init__(message)
+        self.errors = errors
 
 
 class IntegrationConfigError(Exception):

@@ -105,10 +105,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--model", default=None)
+    parser.add_argument("--no-lexicon", action="store_true", help="plain keyword search, without the ru->en glossary")
     args = parser.parse_args(argv)
-    provider = build_rules_service(args.book, args.mode, args.cache_dir, args.model)
+    provider = build_rules_service(args.book, args.mode, args.cache_dir, args.model, lexicon=not args.no_lexicon)
     report = evaluate(provider, load_cases(args.cases))
-    print(f"mode={args.mode}  cases={len(report.results)}\n")
+    print(f"mode={args.mode}  lexicon={'off' if args.no_lexicon else 'on'}  cases={len(report.results)}\n")
     print(format_report(report))
 
 
