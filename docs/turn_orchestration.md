@@ -78,6 +78,7 @@ Backend не должен сам собирать RAG, эмбеддер и DM. �
 | `RULES_MODE` | `keyword`, `rag` или `hybrid` | `keyword` |
 | `RULES_CACHE_DIR` | куда кэшировать векторы (rag/hybrid) | `.rules_index` |
 | `RULES_EMBEDDING_MODEL` | имя модели sentence-transformers | `paraphrase-multilingual-MiniLM-L12-v2` |
+| `RULES_LEXICON` | `0`/`false`/`no`/`off` отключает русско-английский словарь для keyword-поиска | включён |
 
 - `build_orchestrator()` создаёт `TurnOrchestrator` с настоящими Rules Service и `AIDungeonMaster`.
   Любую часть можно подменить (`dm=`, `rules=`) - так делают тесты и заглушки.
@@ -332,7 +333,7 @@ def start_campaign(session_id: str, body: CampaignRequest):          # body.them
 | Ситуация | Результат |
 |---|---|
 | DM вернул `ProviderError(category="quota", status_code=402)` | HTTP 502, `detail`: "Исчерпана квота или требуется оплата. Проверьте лимиты и баланс у провайдера. HTTP 402."; в логе `category=quota retryable=False`; ход не применён |
-| Ход с настоящим оркестратором, DM-заглушкой и книгой правил в `keyword` | DM получает `hidden_plot="Test campaign"`, `room_context=""` и (для русской реплики) `No specific rules found for this action.` |
+| Ход с настоящим оркестратором, DM-заглушкой и книгой правил в `keyword` | DM получает `hidden_plot="Test campaign"`, `room_context=""` и (для русской реплики, до добавления словаря) `No specific rules found for this action.`; со словарём та же реплика получает раздел "Jumping" |
 | Повтор того же `action_id` после перезапуска сервера (состояние в SQLite) | `accepted=false`, `STALE_REVISION`: память об `action_id` пропала, но ревизия в базе защищает от двойного применения (HP не изменилось) |
 | `build_orchestrator()` бросает `IntegrationConfigError` (нет `RULES_BOOK_PATH`) | на каждый запрос HTTP 500, **сборка выполняется заново на каждый запрос** (3 запроса - 3 вызова): `lru_cache` не запоминает исключения |
 
@@ -346,7 +347,7 @@ def start_campaign(session_id: str, body: CampaignRequest):          # body.them
 
 ## Тесты
 
-`python -m unittest discover -s integration/tests -t .` - 75 тестов с реальным движком и реальным
+`python -m unittest discover -s integration/tests -t .` - 77 тестов с реальным движком и реальным
 `RulesService`/`RagRulesService`, DM заменён заглушкой `FakeDM`:
 - оркестратор: применение изменений, контекст для DM (правила, сюжет, состояние, история), отсечка
   устаревшей ревизии без вызова LLM, отбрасывание нарратива при отказе движка, неизвестный персонаж,
