@@ -3,12 +3,12 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from ai_dm.errors import AIDMError, ContextBudgetError, ConfigurationError, InvalidResponseError, ProviderError
+from ai_dm.errors import AIDMError
 from ai_dm.models import TurnHistoryEntry, TurnRequest, TurnResponse
 from engine import apply_action
 from engine.dice import Dice
 from engine.models import EngineError, GameState, PlayerAction
-from integration.errors import DungeonMasterError, UnmappableResponse
+from integration.errors import DungeonMasterError, UnmappableResponse, dungeon_master_error
 from integration.mapping import to_commands, to_dm_state
 from integration.ports import DungeonMaster, RulesProvider
 from rules_service.errors import RulesUnavailableError
@@ -16,17 +16,6 @@ from rules_service.errors import RulesUnavailableError
 NO_RULES = "No specific rules found for this action."
 
 logger = logging.getLogger(__name__)
-
-
-def _dm_error(exc: AIDMError) -> DungeonMasterError:
-    if isinstance(exc, ProviderError):
-        return DungeonMasterError(str(exc), category=exc.category, retryable=exc.retryable, retry_after=exc.retry_after)
-    category = {
-        ContextBudgetError: "context_budget",
-        ConfigurationError: "configuration",
-        InvalidResponseError: "invalid_response",
-    }.get(type(exc), "unknown")
-    return DungeonMasterError(str(exc), category=category)
 
 
 def _elapsed_ms(started: float) -> int:
@@ -117,7 +106,7 @@ class TurnOrchestrator:
         try:
             return self._dm.process_turn(request)
         except AIDMError as exc:
-            error = _dm_error(exc)
+            error = dungeon_master_error(exc)
             logger.error(
                 "dm failed session=%s action=%s category=%s retryable=%s",
                 action.session_id, action.action_id, error.category, error.retryable,

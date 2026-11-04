@@ -48,6 +48,16 @@ def build_rules_provider(settings: RulesSettings, embedder: Embedder | None = No
         raise IntegrationConfigError(f"RULES_MODE={settings.mode} needs the embedding model: {exc}") from exc
 
 
+def build_dungeon_master():
+    """The real AI Dungeon Master (lazy LLM client; it needs OPENAI_API_KEY only when it is first called).
+
+    One object plays both roles: it is the DungeonMaster for turns and the CampaignMaster for campaign starts.
+    """
+    from ai_dm.dm_engine import AIDungeonMaster
+
+    return AIDungeonMaster()
+
+
 def build_orchestrator(
     settings: RulesSettings | None = None,
     dm: DungeonMaster | None = None,
@@ -59,8 +69,4 @@ def build_orchestrator(
     """
     if rules is None:
         rules = build_rules_provider(settings or RulesSettings.from_env())
-    if dm is None:
-        from ai_dm.dm_engine import AIDungeonMaster
-
-        dm = AIDungeonMaster()
-    return TurnOrchestrator(dm, rules)
+    return TurnOrchestrator(dm or build_dungeon_master(), rules)

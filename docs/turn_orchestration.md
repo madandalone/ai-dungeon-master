@@ -269,6 +269,60 @@ def process_turn(session_id: str, turn: PlayerTurnRequest, orchestrator: TurnOrc
 сохраняются в SQLite с проверкой `revision`, но идемпотентные `action_id` после перезапуска теряются.
 Перед запуском нескольких воркеров их нужно хранить вместе с результатом хода в базе данных.
 
+## Начало кампании (`integration/campaign.py`)
+
+По описанию проекта DM заранее придумывает скрытый сюжет по созданным персонажам, а потом раскрывает его
+по ходу игры. `AIDungeonMaster.generate_campaign_start` это умеет, но Backend его не вызывает: в каждый
+ход уходит `hidden_plot="Test campaign"` и пустой `room_context` (проверено на настоящем приложении:
+DM получает ровно эти значения). `begin_campaign` соединяет недостающее звено:
+
+```text
+GameState с героями  ->  begin_campaign(dm, state, theme, dice, monster)
+   1. герои Engine -> CharacterState (имя, HP, предметы-названия) -> CampaignStartRequest
+   2. DM: generate_campaign_start  (сбой -> DungeonMasterError, ничего не изменено)
+   3. Engine: apply_action(SetLocation(starting_location))  - герои оказываются в стартовой сцене
+   -> CampaignStart(campaign, state, events)
+```
+
+| Поле `Campaign` | Что это | Кому показывать |
+|---|---|---|
+| `title` | название приключения | игрокам |
+| `intro_narrative` | вводный текст | игрокам (первая запись летописи) |
+| `starting_location` | локация (становится `location_id`) | игрокам, через состояние |
+| `room_context` | описание стартовой сцены | только DM: Backend передаёт в `play_turn(room_context=...)` |
+| `hidden_plot` | тайна сюжета | **только DM**, на клиент не уходит |
+
+Решения и ограничения:
+- Стартовая сцена - обычное принятое действие движка, поэтому ревизия и `turn_number` растут на 1.
+  Действие приписано первому герою. Это решение нужно подтвердить с автором движка: если вводную сцену
+  не считать ходом, в Engine нужна отдельная операция, а не `SetLocation`.
+- Вызывать один раз на сессию с уже созданными героями; повторный вызов запишет новую кампанию поверх старой.
+- `hidden_plot` не входит в `GameState` и в публичную проекцию (проверено тестом); в логи не попадают
+  ни сюжет, ни тема, ни название.
+- Ошибки DM переводятся тем же `dungeon_master_error`, что и ошибки хода: те же категории и коды.
+- `build_dungeon_master()` возвращает один объект, годный и как `DungeonMaster`, и как `CampaignMaster`.
+
+Что нужно от Backend (его зона): таблица `campaigns(session_id, title, hidden_plot, room_context,
+intro_narrative)` в SQLite рядом с состоянием, эндпоинт запуска кампании и подстановка сохранённых
+`hidden_plot` и `room_context` в `play_turn` вместо заглушки. Набросок:
+
+```python
+@app.post("/sessions/{session_id}/campaign")
+def start_campaign(session_id: str, body: CampaignRequest):          # body.theme, body.monster
+    def start():
+        ensure_session_loaded(session_id)
+        result = begin_campaign(dm, game_states[session_id], body.theme, Dice(LocalRandomSource()), body.monster)
+        store.save_campaign(session_id, result.state, result.campaign)   # состояние и кампания одной записью
+        game_states[session_id] = result.state
+        return {"title": result.campaign.title, "narration": result.campaign.intro_narrative,
+                "state": public_state(session_id)}
+    response, _ = turn_executor.run(session_id, f"campaign:{session_id}", start, remember=lambda r: True)
+    return response
+```
+
+Повторный запрос на запуск вернёт тот же ответ без нового вызова DM (ключ `campaign:<id>`), а сбой DM
+(`DungeonMasterError`, 502 или статус по `category`) оставит сессию без кампании, и запуск можно повторить.
+
 ## Как Backend подключён сейчас и что стоит поправить
 
 `backend/main.py` использует фабрику: `get_orchestrator()` с `@lru_cache(maxsize=1)` вызывает
@@ -278,6 +332,8 @@ def process_turn(session_id: str, turn: PlayerTurnRequest, orchestrator: TurnOrc
 | Ситуация | Результат |
 |---|---|
 | DM вернул `ProviderError(category="quota", status_code=402)` | HTTP 502, `detail`: "Исчерпана квота или требуется оплата. Проверьте лимиты и баланс у провайдера. HTTP 402."; в логе `category=quota retryable=False`; ход не применён |
+| Ход с настоящим оркестратором, DM-заглушкой и книгой правил в `keyword` | DM получает `hidden_plot="Test campaign"`, `room_context=""` и (для русской реплики) `No specific rules found for this action.` |
+| Повтор того же `action_id` после перезапуска сервера (состояние в SQLite) | `accepted=false`, `STALE_REVISION`: память об `action_id` пропала, но ревизия в базе защищает от двойного применения (HP не изменилось) |
 | `build_orchestrator()` бросает `IntegrationConfigError` (нет `RULES_BOOK_PATH`) | на каждый запрос HTTP 500, **сборка выполняется заново на каждый запрос** (3 запроса - 3 вызова): `lru_cache` не запоминает исключения |
 
 Следствия для Backend (его файл, решает Наталья):
@@ -290,7 +346,7 @@ def process_turn(session_id: str, turn: PlayerTurnRequest, orchestrator: TurnOrc
 
 ## Тесты
 
-`python -m unittest discover -s integration/tests -t .` - 63 теста с реальным движком и реальным
+`python -m unittest discover -s integration/tests -t .` - 75 тестов с реальным движком и реальным
 `RulesService`/`RagRulesService`, DM заменён заглушкой `FakeDM`:
 - оркестратор: применение изменений, контекст для DM (правила, сюжет, состояние, история), отсечка
   устаревшей ревизии без вызова LLM, отбрасывание нарратива при отказе движка, неизвестный персонаж,
@@ -300,7 +356,9 @@ def process_turn(session_id: str, turn: PlayerTurnRequest, orchestrator: TurnOrc
   в логах;
 - фабрика: быстрый отказ при старте, если модель эмбеддингов недоступна;
 - протокол хода: повтор с тем же `action_id`, устаревшая ревизия, гонка двух игроков, гонка повтора с оригиналом;
-- `IdempotentExecutor`: повтор, границы запоминания, исключения, независимость сессий, отсутствие пересечений.
+- `IdempotentExecutor`: повтор, границы запоминания, исключения, независимость сессий, отсутствие пересечений;
+- начало кампании: запрос к DM из героев, перемещение через Engine, отсутствие сюжета в состоянии и логах,
+  категории ошибок DM, отказ Engine, ошибки вызывающего кода.
 
 ## Что остаётся Backend и не реализовано
 
