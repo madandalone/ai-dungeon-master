@@ -72,6 +72,32 @@ def apply_action(
     return EngineResult(True, accepted_state, tuple(events), ())
 
 
+def add_character(
+    state: GameState,
+    character: Character,
+    expected_revision: int,
+) -> EngineResult:
+    """Add a character during session setup without consuming a game turn."""
+    if expected_revision != state.revision:
+        error = EngineError("STALE_REVISION", "Character revision does not match the game state.")
+        return EngineResult(False, state, (), (error,))
+
+    if _find_character(state, character.id) is not None:
+        error = EngineError("DUPLICATE_CHARACTER", "Character id already exists in this session.")
+        return EngineResult(False, state, (), (error,))
+
+    error = _character_error(character)
+    if error is not None:
+        return EngineResult(False, state, (), (error,))
+
+    updated = replace(
+        state,
+        revision=state.revision + 1,
+        characters=(*state.characters, character),
+    )
+    return EngineResult(True, updated, (), ())
+
+
 def _reject(state: GameState, action: PlayerAction, errors: tuple[EngineError, ...]) -> EngineResult:
     rejected = ActionRejected(action.action_id, 0, errors[0].code)
     return EngineResult(False, state, (rejected,), errors)
@@ -250,6 +276,25 @@ def _find_character(state: GameState, character_id: str) -> Character | None:
     for character in state.characters:
         if character.id == character_id:
             return character
+    return None
+
+
+def _character_error(character: Character) -> EngineError | None:
+    if character.id.strip() == "" or character.name.strip() == "":
+        return EngineError("INVALID_CHARACTER", "Character id and name are required.")
+    if not _is_int(character.hp) or not _is_int(character.max_hp):
+        return EngineError("INVALID_CHARACTER", "Character health must be an integer.")
+    if character.max_hp <= 0 or character.hp < 0 or character.hp > character.max_hp:
+        return EngineError("INVALID_CHARACTER", "Character health is outside the allowed range.")
+    if len(character.stats) > 10:
+        return EngineError("INVALID_CHARACTER", "Character has too many stats.")
+    if any(name.strip() == "" or not _is_int(value) for name, value in character.stats.items()):
+        return EngineError("INVALID_CHARACTER", "Character stats are invalid.")
+    if any(
+        item.item_id.strip() == "" or item.name.strip() == "" or not _is_int(item.quantity) or item.quantity <= 0
+        for item in character.inventory
+    ):
+        return EngineError("INVALID_CHARACTER", "Character inventory is invalid.")
     return None
 
 

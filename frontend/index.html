@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#000000">
     <title>AI Dungeon Master</title>
+    <link rel="icon" href="data:,">
     <link rel="stylesheet" href="styles.css?v=20261109-1">
   </head>
   <body>
@@ -89,7 +90,7 @@
               <div class="character-grid" id="character-grid"></div>
             </article>
             <article class="pixel-panel form-panel">
-              <p class="panel-eyebrow" data-i18n="characters.createEyebrow">НОВЫЙ ПУТНИК</p><h2 data-i18n="characters.createTitle">Создать героя</h2><p class="panel-copy" data-i18n="characters.createBody">Дайте герою имя, коротко опишите его роль и укажите стартовые параметры.</p><p class="server-form-notice" id="character-form-notice" role="status"></p>
+              <p class="panel-eyebrow" data-i18n="characters.createEyebrow">НОВЫЙ ПУТНИК</p><h2 data-i18n="characters.createTitle">Создать героя</h2><p class="panel-copy" data-i18n="characters.createBody">Дайте герою имя, коротко опишите его роль и укажите стартовые параметры.</p><p class="server-form-notice" id="character-form-notice" role="status">Выберите серверную сессию</p>
               <form id="character-form" class="stack-form">
                 <label><span data-i18n="characters.name">Имя</span><input id="character-name" name="character-name" type="text" maxlength="60" required data-i18n-placeholder="characters.namePlaceholder" placeholder="Например, Элиас"></label>
                 <label><span data-i18n="characters.concept">Кто этот герой</span><input id="character-concept" name="character-concept" type="text" maxlength="120" data-i18n-placeholder="characters.conceptPlaceholder" placeholder="Плут, лесной следопыт, боевой маг…"></label>
@@ -117,7 +118,7 @@
               <p class="panel-eyebrow" data-i18n="session.newEyebrow">НОВАЯ ИСТОРИЯ</p><h2 data-i18n="session.newTitle">Создать сессию</h2><p class="panel-copy" data-i18n="session.newBody">Название поможет быстро узнать эту игру среди других приключений.</p>
               <form id="create-session-form" class="stack-form"><label><span data-i18n="session.name">Название приключения</span><input id="session-name" name="session-name" type="text" maxlength="80" required data-i18n-placeholder="session.namePlaceholder" placeholder="Тайна затонувшего храма"></label><button class="primary-button" type="submit" data-i18n="session.create">Создать на сервере</button></form>
               <div class="form-divider"><span data-i18n="common.or">или</span></div>
-              <form id="join-session-form" class="stack-form"><label><span data-i18n="session.code">Код сессии</span><input id="join-session-id" name="join-session-id" type="text" maxlength="80" required data-i18n-placeholder="session.codePlaceholder" placeholder="Вставьте ID сессии"></label><button class="secondary-button" type="submit" data-i18n="session.join">Сохранить код</button><p class="context-hint" data-i18n="session.joinHint">Backend пока не умеет проверять этот код. Сессия будет отмечена как непроверенная.</p></form>
+              <form id="join-session-form" class="stack-form"><label><span data-i18n="session.code">Код сессии</span><input id="join-session-id" name="join-session-id" type="text" maxlength="80" required data-i18n-placeholder="session.codePlaceholder" placeholder="Вставьте ID сессии"></label><button class="secondary-button" type="submit" data-i18n="session.join">Подключиться</button><p class="context-hint" data-i18n="session.joinHint">Код проверяется через Backend, затем загружается состояние игры.</p></form>
               <p class="form-message" id="session-result" role="status"></p>
             </article>
             <article class="pixel-panel integration-panel">

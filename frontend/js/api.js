@@ -186,6 +186,23 @@ export async function fetchSessionState(sessionId, fetcher = globalThis.fetch) {
   return body;
 }
 
+export async function createCharacter(sessionId, character, fetcher = globalThis.fetch) {
+  const body = await requestJson(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/characters`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      expected_revision: character.expectedRevision,
+      name: character.name,
+      concept: character.concept,
+      max_hp: character.maxHp,
+      stats: character.stats,
+      starting_item: character.startingItem,
+    }),
+  }, fetcher);
+  if (!isPublicState(body)) throw new ApiError("invalid_response");
+  return body;
+}
+
 export async function submitTurn(sessionId, turn, fetcher = globalThis.fetch) {
   const body = await requestJson(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/turns`, {
     method: "POST",

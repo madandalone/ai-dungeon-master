@@ -1,14 +1,18 @@
+import logging
 from collections import defaultdict
 
+from rules_service.errors import RulesUnavailableError
 from rules_service.rag import RagRulesService
 from rules_service.service import RuleChunk, RulesService, format_rules
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_RRF_K = 60
 CANDIDATE_MULTIPLIER = 3
 
 
 class HybridRulesService:
-    """Rank fusion of keyword (TF-IDF) and semantic (RAG) retrieval.
+    """Rank fusion of keyword (BM25) and semantic (RAG) retrieval.
 
     Keyword search is strong for exact terms like "1d6" or named spells.
     RAG is strong for cross-language and paraphrase queries.
@@ -34,7 +38,12 @@ class HybridRulesService:
             scores[cid] += 1.0 / (self._k + rank)
             by_id[cid] = chunk
 
-        for rank, chunk in enumerate(self._rag.search(query, top_k=need), start=1):
+        try:
+            semantic = self._rag.search(query, top_k=need)
+        except RulesUnavailableError:
+            logger.warning("semantic search unavailable: hybrid search falls back to keyword results", exc_info=True)
+            semantic = []
+        for rank, chunk in enumerate(semantic, start=1):
             cid = self._chunk_id(chunk)
             scores[cid] += 1.0 / (self._k + rank)
             by_id[cid] = chunk

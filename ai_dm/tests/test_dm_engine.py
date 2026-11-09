@@ -52,6 +52,16 @@ def fake_client(*responses):
     return client
 
 
+class UncheckedDM:
+    """Returns a fixed response without ai_dm validation, to reach an Engine refusal."""
+
+    def __init__(self, data):
+        self._response = TurnResponse(**data)
+
+    def process_turn(self, request):
+        return self._response.model_copy(deep=True)
+
+
 def turn_request():
     return TurnRequest(
         rules_summary="Дверь можно осмотреть.",
@@ -337,9 +347,33 @@ class IntegrationCompatibilityTests(unittest.TestCase):
                 self.assertEqual(self.state, before)
                 self.assertEqual(self.source.consumed, 0)
 
+    def test_missing_item_removal_is_repaired_before_engine(self):
+        missing = {**TURN, "state_updates": [{"character_name": "Элиас", "items_removed": ["Меч"]}]}
+        client = fake_client(completion(json.dumps(missing)), completion(json.dumps(TURN)))
+        outcome = self.play(client)
+        self.assertTrue(outcome.accepted)
+        self.assertEqual((outcome.state.revision, outcome.state.turn_number), (1, 1))
+        calls = client.chat.completions.create.call_args_list
+        self.assertEqual(len(calls), 2)
+        repair = calls[1].kwargs["messages"][-1]["content"]
+        self.assertIn('которых у персонажа нет: ["Меч"]', repair)
+        self.assertIn("Инвентарь персонажа: []", repair)
+
+    def test_repeated_missing_item_removal_fails_without_changing_state(self):
+        missing = {**TURN, "state_updates": [{"character_name": "Элиас", "items_removed": ["Меч"]}]}
+        before = copy.deepcopy(self.state)
+        client = fake_client(completion(json.dumps(missing)), completion(json.dumps(missing)))
+        with self.assertRaises(DungeonMasterError) as caught:
+            self.play(client)
+        self.assertIsInstance(caught.exception.__cause__, InvalidResponseError)
+        self.assertEqual(self.state, before)
+        self.assertEqual(self.source.consumed, 0)
+
     def test_engine_rejection_still_discards_narration(self):
         data = {**TURN, "state_updates": [{"character_name": "Элиас", "items_removed": ["Меч"]}]}
-        outcome = self.play(fake_client(completion(json.dumps(data))))
+        outcome = TurnOrchestrator(UncheckedDM(data), self.rules).play_turn(
+            self.state, self.action, "secret", self.dice
+        )
         self.assertFalse(outcome.accepted)
         self.assertIs(outcome.state, self.state)
         self.assertIsNone(outcome.narration)

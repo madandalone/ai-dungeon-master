@@ -62,8 +62,8 @@ public history.
   renders a compact receipt of state changes, and refreshes the active hero
   HUD from the returned server state.
 - **Heroes** renders server characters with an automatically selected
-  archetype icon, accessible HP progress, stats, and inventory. The creation
-  form is visibly disabled until Backend provides a character endpoint.
+  archetype icon, accessible HP progress, stats, and inventory. In a server
+  session, the creation form saves a new hero through Backend.
 - **World** summarizes the current location, session, party, and log size.
 - **Session** checks Backend health, creates a session, validates a session ID
   through Backend, and switches between cached server snapshots.
@@ -88,6 +88,8 @@ The API base follows the Frontend hostname on port 8000. The client implements:
 - `GET /health`, healthy only for a successful `{ "status": "ok" }` response;
 - `POST /sessions` with `{ "name": string }`, expecting string `id` and `name`;
 - `GET /sessions/{id}/state`, expecting the public Engine projection;
+- `POST /sessions/{id}/characters` with the observed revision and validated
+  character fields, expecting the updated public Engine projection;
 - `POST /sessions/{id}/turns` with a client-generated `action_id`, the last
   observed `expected_revision`, `character_id`, and `text`, expecting
   acceptance, public narration, current state, revision, turn number, and
@@ -116,10 +118,9 @@ origin on port 4173.
 parity, session migration and isolation, API response validation, turn state
 merging, safe failure messages, archetype selection, and HP thresholds.
 
-The Frontend does not implement authoritative character creation,
-authentication, cross-device persistence, or multiplayer updates. Public
-history is tab-local because Backend history currently includes private DM
-notes and has no separate public endpoint.
+The Frontend does not implement authentication, cross-device persistence, or
+multiplayer updates. Public history is tab-local because Backend history
+currently includes private DM notes and has no separate public endpoint.
 
 ### Integration-ready UI contract
 
@@ -160,10 +161,9 @@ marks Rules Service as degraded. Warning messages from Backend are deliberately
 ignored so provider details cannot leak into the UI. Errors remain rejection
 signals and use the red frame.
 
-Future character creation should add a dedicated API client function and only
-then enable the existing form. Future public history should populate the
-allowlisted `log` entries in the public state or expose a separate public
-endpoint; it must never reuse history objects containing `dm_notes`.
+Future public history should populate the allowlisted `log` entries in the
+public state or expose a separate public endpoint; it must never reuse history
+objects containing `dm_notes`.
 
 ## Game Engine
 
@@ -445,7 +445,7 @@ not reveal campaign content.
 
 ### Unit tests
 
-The current suite contains 16 `unittest` tests and covers:
+The current suite contains 20 `unittest` tests and covers:
 
 - input state preservation and creation of a new accepted state;
 - exactly one revision/turn increment;
@@ -469,31 +469,19 @@ cover the current turn orchestration separately.
 
 Backend ownership:
 
-- merge the turn endpoint and allow the Frontend development origins on ports
-  4173 and 5500 through CORS;
 - extend `GET /health` with the public `components.dm`, `components.rules`, and
   `components.history` statuses described above;
-- build the real orchestrator once at application startup instead of creating
-  fake DM and rules providers per request;
-- pass a sanitized public chronicle into `to_public_dict(..., log=...)`; every
-  entry must contain only `kind`, `character_id`, and `text`;
-- add `POST /sessions/{id}/characters` for the existing form and return the
-  updated public state after creation;
-- return stable public `errors` and `warnings` without raw provider messages.
 - return `events: to_public_events(outcome.events)` from the turn endpoint;
   the Frontend already accepts this field and has a snapshot-diff fallback;
-- accept the Frontend `action_id` and `expected_revision` instead of replacing
-  them, then enforce idempotency and return `409` for stale revisions.
+- add multi-process coordination around session revisions and processed turns;
+- add session listing or deletion only when the product needs those flows.
 
 Rules and integration ownership:
 
-- wire `build_orchestrator()` into Backend after the rules-wiring branch is
-  merged;
-- surface a rules outage only as a safe `RULES_UNAVAILABLE` warning;
-- keep the turn accepted when Rules Service is optional and unavailable, so
-  the Frontend can render the yellow limited-mode notice;
+- keep a Rules Service outage as a safe `RULES_UNAVAILABLE` warning;
 - keep retrieved rule text, embeddings, and internal logs outside the public
-  response.
+  response;
+- extend the evaluation set when new rule books are added.
 
 AI Dungeon Master ownership:
 
@@ -504,19 +492,14 @@ AI Dungeon Master ownership:
 
 ## Current Limitations
 
-- Backend session state and private turn history are process-local and
-  disappear on restart.
-- Backend still uses fake DM and rules providers until the integration factory
-  is wired in.
-- The current CORS list includes port 5500 but not the documented port 4173.
-- There is no authoritative character-creation endpoint.
-- Public turn history is not available from Backend, so the browser chronicle
-  survives only in the current tab.
+- SQLite persists sessions, state, characters and history, but is intended for
+  the local single-process prototype.
+- Processed turn responses survive restarts in SQLite, while per-session
+  execution locking remains process-local.
+- Sessions can be restored by ID, but there is no server-side session list.
 - Combat is limited to generic HP adjustment and skill checks; there is no
   initiative, action economy, conditions, armor, or encounter model.
 - There is no multiplayer identity, authorization, turn ownership, locking,
   push update, or reconnect protocol.
 - There is no item/location/stat rules catalog.
 - Command, event, error, and public-state JSON schemas are not versioned.
-- The Frontend sends stable retry metadata, but idempotent `action_id` storage
-  and compare-and-swap revision handling are not implemented by the Backend.

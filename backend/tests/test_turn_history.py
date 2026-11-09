@@ -3,9 +3,16 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from backend.main import app, game_histories, game_states, sessions
-
-
+from backend.main import (
+    app,
+    game_histories,
+    game_states,
+    sessions,
+    get_orchestrator,
+    FakeDungeonMaster,
+    FakeRulesProvider,
+)
+from integration.factory import build_orchestrator
 class TestTurnHistory(unittest.TestCase):
 
     def setUp(self):
@@ -20,6 +27,12 @@ class TestTurnHistory(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.session_id = response.json()["id"]
+
+        app.dependency_overrides[get_orchestrator] = lambda: build_orchestrator(
+            dm=FakeDungeonMaster(),
+            rules=FakeRulesProvider(),
+        )
+        self.addCleanup(app.dependency_overrides.clear)
 
     def send_turn(self, character_id="hero", text="Я открываю дверь"):
         return self.client.post(

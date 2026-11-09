@@ -1,5 +1,5 @@
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # --- Входной контекст от Game Engine и Rules Service ---
 class CharacterState(BaseModel):
@@ -16,6 +16,7 @@ class GameState(BaseModel):
 class TurnHistoryEntry(BaseModel):
     """Один принятый ход; dm_notes доступны только мастеру."""
 
+    character_id: str = ""
     player_action: str
     narrative: str
     dm_notes: str = ""
@@ -27,6 +28,15 @@ class TurnRequest(BaseModel):
     game_state: GameState     # Текущее состояние мира и героев
     player_action: str        # Текст действия игрока
     history: List[TurnHistoryEntry] = Field(default_factory=list)
+    # Имя персонажа, совершающего действие; пустая строка — не указан (старые вызовы).
+    acting_character: str = ""
+
+    @model_validator(mode="after")
+    def _acting_character_is_active(self) -> "TurnRequest":
+        names = {character.name for character in self.game_state.active_characters}
+        if self.acting_character and self.acting_character not in names:
+            raise ValueError("acting_character must be one of game_state.active_characters names")
+        return self
 
 
 # --- Структурированный ответ от AI Dungeon Master ---

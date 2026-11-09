@@ -6,10 +6,12 @@ from contextlib import redirect_stdout
 from dataclasses import replace
 from unittest.mock import patch
 
-from ai_dm import main
+from pydantic import ValidationError
+
+from ai_dm import main, prompts
 from ai_dm.dm_engine import AIDungeonMaster
 from ai_dm.errors import InvalidResponseError
-from ai_dm.models import CharacterState
+from ai_dm.models import CharacterState, TurnHistoryEntry, TurnRequest
 from ai_dm.tests.test_dm_engine import CAMPAIGN, TURN, completion, fake_client, turn_request
 from ai_dm.tests.test_history import action, session
 from engine.dice import Dice, SequenceSource
@@ -102,6 +104,46 @@ class CharacterNameTests(unittest.TestCase):
         client = fake_client(completion(json.dumps(TURN)))
         self.assertEqual(AIDungeonMaster(client).process_turn(request).state_updates, [])
         self.assertEqual(client.chat.completions.create.call_count, 1)
+
+    def prompt_for(self, request):
+        client = fake_client(completion(json.dumps(TURN)))
+        AIDungeonMaster(client).process_turn(request)
+        return client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+
+    def test_acting_character_is_named_in_the_prompt(self):
+        request = turn_request()
+        request.game_state.active_characters.append(
+            CharacterState(name="Мира (Жрица)", hp=8, max_hp=8, inventory=[]))
+        request = TurnRequest(**{**request.model_dump(), "acting_character": "Мира (Жрица)"})
+        prompt = self.prompt_for(request)
+        self.assertIn('### ДЕЙСТВУЮЩИЙ ПЕРСОНАЖ:\n"Мира (Жрица)"\n', prompt)
+        self.assertNotIn(prompts._ACTOR_UNKNOWN, prompt)
+
+    def test_request_without_acting_character_stays_compatible(self):
+        request = turn_request()
+        self.assertEqual(request.acting_character, "")
+        prompt = self.prompt_for(request)
+        self.assertIn(f"### ДЕЙСТВУЮЩИЙ ПЕРСОНАЖ:\n{prompts._ACTOR_UNKNOWN}\n", prompt)
+
+    def test_acting_character_must_be_an_exact_active_name(self):
+        data = turn_request().model_dump()
+        for name in ("Призрак", "элиас", "Элиас "):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValidationError, "acting_character"):
+                    TurnRequest(**{**data, "acting_character": name})
+        self.assertEqual(TurnRequest(**{**data, "acting_character": "Элиас"}).acting_character, "Элиас")
+
+    def test_history_prompt_omits_opaque_character_ids(self):
+        request = turn_request()
+        request.history = [TurnHistoryEntry(
+            character_id="c0ffee00-0000-4000-8000-000000000000",
+            player_action="Осматриваю дверь.", narrative="Дверь заперта.", dm_notes="Ключ у стража.",
+        )]
+        prompt = self.prompt_for(request)
+        self.assertNotIn("c0ffee00", prompt)
+        self.assertNotIn("character_id", prompt)
+        self.assertIn("Дверь заперта.", prompt)
+        self.assertEqual(request.history[0].character_id, "c0ffee00-0000-4000-8000-000000000000")
 
     def test_demo_does_not_refer_to_an_unaccepted_previous_turn(self):
         client = fake_client(

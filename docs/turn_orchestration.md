@@ -2,8 +2,8 @@
 
 Пакет `integration/` реализует игровой ход из `docs/integration.md`
 (раздел "Target flow") как чистую функцию без HTTP, БД и сети.
-Backend вызывает её из `POST /sessions/{id}/turns` (реализован в ветке Натальи
-`feature/backend-turn-orchestration`, пока с заглушками DM и правил - см. раздел "Сборка компонентов").
+Backend вызывает её из `POST /sessions/{id}/turns`, собирая оркестратор фабрикой `build_orchestrator()`
+(см. разделы "Сборка компонентов" и "Как Backend подключён сейчас").
 
 ```text
 PlayerAction + GameState + history (из хранилища Backend)
@@ -55,8 +55,9 @@ PlayerAction + GameState + history (из хранилища Backend)
 ## История ходов
 
 `TurnOrchestrator.play_turn` принимает опциональный аргумент `history` (последовательность
-`TurnHistoryEntry` или словарей) и кладёт его в `TurnRequest.history`; без аргумента история пустая.
-Запись неподдерживаемого типа - `TypeError` (ошибка вызывающего кода, не `IntegrationError`).
+`TurnHistoryEntry`, тип зафиксирован аннотацией) и кладёт его в `TurnRequest.history`; без аргумента
+история пустая. Словари и произвольные объекты не конвертируются: граница строгая, а неверный тип
+отклоняет валидация `TurnRequest` (`pydantic.ValidationError` - ошибка вызывающего кода, не `IntegrationError`).
 DM сам берёт из истории только последние 10 записей (`HISTORY_LIMIT` в `ai_dm.dm_engine`).
 
 Backend должен передавать в `history` только **принятые** ходы, в порядке от старых к новым.
@@ -77,6 +78,7 @@ Backend не должен сам собирать RAG, эмбеддер и DM. �
 | `RULES_MODE` | `keyword`, `rag` или `hybrid` | `keyword` |
 | `RULES_CACHE_DIR` | куда кэшировать векторы (rag/hybrid) | `.rules_index` |
 | `RULES_EMBEDDING_MODEL` | имя модели sentence-transformers | `paraphrase-multilingual-MiniLM-L12-v2` |
+| `RULES_LEXICON` | `0`/`false`/`no`/`off` отключает русско-английский словарь для keyword-поиска | включён |
 
 - `build_orchestrator()` создаёт `TurnOrchestrator` с настоящими Rules Service и `AIDungeonMaster`.
   Любую часть можно подменить (`dm=`, `rules=`) - так делают тесты и заглушки.
@@ -147,17 +149,43 @@ else:
 
 ## Сбои и логи
 
-| Что сломалось | Поведение | Что видит Backend |
-|---|---|---|
-| Rules Service бросил исключение (не загрузилась модель, битый индекс) | ход продолжается с `NO_RULES`, `logger.warning` с трассировкой | `TurnOutcome.rules_failed=True` |
-| Rules Service вернул пустую строку | то же `NO_RULES`, это не сбой | `rules_failed=False` |
-| DM упал или вернул невалидный ответ | `DungeonMasterError`, ничего не применено | исключение; `str()` содержит только тип ошибки, причина в `__cause__` |
-| DM назвал неизвестного персонажа | `UnmappableResponse` | исключение |
-| Движок отклонил команды | `accepted=False`, нарратив отброшен | `errors` с кодами |
+Контракт сбоев строгий в обе стороны: обрабатываются только объявленные типы исключений, всё остальное
+считается багом и пробрасывается, чтобы его нельзя было спутать с "сервис временно недоступен".
 
-Сообщение `DungeonMasterError` намеренно не содержит текста исходной ошибки: провайдеры LLM могут
-вернуть в нём фрагменты запроса, а Backend отдаёт `str(exc)` клиенту (`HTTPException(502, detail=...)`).
-Полная причина доступна в логах Backend через `__cause__`.
+| Что произошло | Объявленный тип | Поведение | Что видит Backend |
+|---|---|---|---|
+| Источник правил временно недоступен (не загрузилась модель) | `rules_service.RulesUnavailableError` | ход продолжается с `NO_RULES`, `WARNING` с трассировкой | `TurnOutcome.rules_failed=True` |
+| Rules Service вернул пустую строку | - | то же `NO_RULES`, это не сбой | `rules_failed=False` |
+| Баг в поставщике правил (`KeyError` и т.п.) | любой другой | не перехватывается | исходное исключение (500) |
+| DM сообщил об ошибке | `ai_dm.errors.AIDMError` и наследники | `DungeonMasterError`, ничего не применено | исключение с `category`, `retryable`, `retry_after` |
+| Баг в DM (`TypeError` и т.п.) | любой другой | не перехватывается | исходное исключение (500) |
+| DM назвал неизвестного персонажа | - | `UnmappableResponse` | исключение |
+| Движок отклонил команды | - | `accepted=False`, нарратив отброшен | `errors` с кодами |
+| Нет книги, неизвестный режим, модель не грузится при старте | - | `IntegrationConfigError` при `build_orchestrator()` | исключение при старте приложения |
+
+### Метаданные ошибки DM
+
+`DungeonMasterError` переносит безопасные данные из ошибок Егора (`ai_dm.errors`), а исходное исключение
+остаётся в `__cause__` для логов. Текст сообщения формирует сам DM по своему контракту безопасных
+сообщений; он не содержит запрос и скрытый сюжет.
+
+| Источник в `ai_dm` | `category` | `retryable` |
+|---|---|---|
+| `ProviderError` | `authentication`, `permission`, `quota`, `rate_limit`, `unavailable`, `invalid_request`, `timeout`, `connection`, `unknown` (как у провайдера) | как у провайдера (`rate_limit`, `unavailable`) |
+| `ContextBudgetError` | `context_budget` | нет |
+| `ConfigurationError` | `configuration` | нет |
+| `InvalidResponseError` | `invalid_response` | нет |
+| прочие `AIDMError` | `unknown` | нет |
+
+Рекомендуемое соответствие HTTP-ответам для Backend (решает Наталья; сейчас любая ошибка идёт как 502):
+
+| `category` | Ответ |
+|---|---|
+| `rate_limit` | 429, заголовок `Retry-After` из `retry_after`, если есть |
+| `unavailable`, `connection` | 503 |
+| `timeout` | 504 |
+| `authentication`, `permission`, `quota`, `invalid_request`, `configuration` | 503: проблема оператора, игроку показать общий текст, подробности только в логах |
+| `invalid_response`, `context_budget`, `unknown` | 502 |
 
 Логгер `integration.orchestrator` пишет одну строку на ход:
 
@@ -166,25 +194,177 @@ turn session=s1 action=a1 accepted=True errors=- commands=2 rules_failed=False r
 ```
 
 Только идентификаторы, коды ошибок и время. Текст игрока, нарратив, заметки DM и скрытый сюжет в логи
-не попадают (проверено тестом). Уровни: `INFO` - ход, `WARNING` - сбой правил, `ERROR` - сбой DM и
-неразрешимый ответ.
+не попадают (проверено тестом). Уровни: `INFO` - ход, `WARNING` - недоступные правила, `ERROR` - сбой DM
+(в строке `category` и `retryable`, без текста) и неразрешимый ответ.
+
+## Повторы и параллельные ходы
+
+Фронтенд теперь шлёт в `POST /sessions/{id}/turns` поля `action_id` и `expected_revision`, при повторе
+того же хода сохраняет тот же `action_id` и обрабатывает HTTP 409 как устаревшую ревизию. Backend пока
+читает только `character_id` и `text`, а `action_id` и ревизию генерирует сам. Проверено на настоящем
+маршруте (DM-заглушка со счётчиком вызовов):
+
+| Сценарий | Что происходит сейчас | Ожидается |
+|---|---|---|
+| Клиент повторил тот же ход (`action_id` одинаковый, например после обрыва сети) | 2 вызова LLM, ревизия 1 -> 2, HP 9 -> 8 | один вызов LLM, ход применён один раз |
+| `expected_revision=0`, а сессия уже на ревизии 2 | 200, `accepted=true` | 409 `STALE_REVISION` без вызова LLM |
+| Два игрока одновременно | оба `accepted=true`, итоговое HP 9 при двух принятых ходах (потерянное обновление) | один принят, второй получает 409 |
+
+Для этого в `integration/turns.py` два небольших инструмента; Backend остаётся владельцем состояния.
+
+- `make_player_action(state, character_id, text, action_id, expected_revision)` строит `PlayerAction` из
+  данных клиента: присланные `action_id` и `expected_revision` сохраняются (поэтому устаревшего клиента
+  отклоняет сам Engine кодом `STALE_REVISION`, до вызова LLM), клиент без этих полей считается
+  актуальным и получает новый id.
+- `IdempotentExecutor.run(session_id, key, fn, remember)` выполняет `fn` под блокировкой сессии: загрузка
+  состояния, ход и сохранение внутри `fn` атомарны относительно других ходов этой сессии, а разные
+  сессии друг друга не блокируют. Если `key` уже дал сохранённый результат, `fn` не вызывается и
+  возвращается прежний результат (`replayed=True`).
+
+Что запоминается: только результаты с `remember(result) == True`, то есть принятые (применённые) ходы.
+Отклонённый ход ничего не менял и после обновления ревизии может пройти; сбой DM (исключение) ничего не
+сохраняет и снимает блокировку, поэтому повтор с тем же `action_id` выполнится заново. На сессию
+хранится не больше 256 последних результатов, всё в памяти процесса.
+
+Контракт зафиксирован тестами `integration/tests/test_turn_protocol.py` (полный цикл с настоящим
+Engine, оркестратором и параллельными потоками). Так мог бы выглядеть обработчик в Backend:
+
+```python
+executor = IdempotentExecutor()
+
+class PlayerTurnRequest(BaseModel):
+    character_id: str
+    text: str
+    action_id: str | None = None
+    expected_revision: int | None = None
+
+@app.post("/sessions/{session_id}/turns")
+def process_turn(session_id: str, turn: PlayerTurnRequest, orchestrator: TurnOrchestrator = Depends(get_orchestrator)):
+    if session_id not in game_states:
+        raise HTTPException(404, "Session not found")
+
+    def play() -> dict:
+        state = game_states[session_id]                      # читаем состояние уже под блокировкой
+        action = make_player_action(state, turn.character_id, turn.text, turn.action_id, turn.expected_revision)
+        try:
+            outcome = orchestrator.play_turn(state, action, hidden_plot, Dice(LocalRandomSource()),
+                                             history=game_histories[session_id])
+        except IntegrationError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        if outcome.accepted:
+            game_states[session_id] = outcome.state
+            game_histories[session_id].append(TurnHistoryEntry(player_action=turn.text,
+                narrative=outcome.narration or "", dm_notes=outcome.dm_notes or ""))
+        return {"accepted": outcome.accepted, "narration": outcome.narration, "revision": outcome.state.revision,
+                "state": to_public_dict(outcome.state, session_name=sessions[session_id].name),
+                "turn_number": outcome.state.turn_number,
+                "errors": [{"code": e.code, "message": e.message} for e in outcome.errors]}
+
+    body, _replayed = executor.run(session_id, turn.action_id or str(uuid4()), play, remember=lambda b: b["accepted"])
+    if any(e["code"] == "STALE_REVISION" for e in body["errors"]):
+        raise HTTPException(409, detail=body)                # фронтенд разбирает 409 как stale_revision
+    return body
+```
+
+Граница: блокировка и кэш результатов действуют внутри одного процесса. Состояние и история уже
+сохраняются в SQLite с проверкой `revision`, но идемпотентные `action_id` после перезапуска теряются.
+Перед запуском нескольких воркеров их нужно хранить вместе с результатом хода в базе данных.
+
+## Начало кампании (`integration/campaign.py`)
+
+По описанию проекта DM заранее придумывает скрытый сюжет по созданным персонажам, а потом раскрывает его
+по ходу игры. `AIDungeonMaster.generate_campaign_start` это умеет, но Backend его не вызывает: в каждый
+ход уходит `hidden_plot="Test campaign"` и пустой `room_context` (проверено на настоящем приложении:
+DM получает ровно эти значения). `begin_campaign` соединяет недостающее звено:
+
+```text
+GameState с героями  ->  begin_campaign(dm, state, theme, dice, monster)
+   1. герои Engine -> CharacterState (имя, HP, предметы-названия) -> CampaignStartRequest
+   2. DM: generate_campaign_start  (сбой -> DungeonMasterError, ничего не изменено)
+   3. Engine: apply_action(SetLocation(starting_location))  - герои оказываются в стартовой сцене
+   -> CampaignStart(campaign, state, events)
+```
+
+| Поле `Campaign` | Что это | Кому показывать |
+|---|---|---|
+| `title` | название приключения | игрокам |
+| `intro_narrative` | вводный текст | игрокам (первая запись летописи) |
+| `starting_location` | локация (становится `location_id`) | игрокам, через состояние |
+| `room_context` | описание стартовой сцены | только DM: Backend передаёт в `play_turn(room_context=...)` |
+| `hidden_plot` | тайна сюжета | **только DM**, на клиент не уходит |
+
+Решения и ограничения:
+- Стартовая сцена - обычное принятое действие движка, поэтому ревизия и `turn_number` растут на 1.
+  Действие приписано первому герою. Это решение нужно подтвердить с автором движка: если вводную сцену
+  не считать ходом, в Engine нужна отдельная операция, а не `SetLocation`.
+- Вызывать один раз на сессию с уже созданными героями; повторный вызов запишет новую кампанию поверх старой.
+- `hidden_plot` не входит в `GameState` и в публичную проекцию (проверено тестом); в логи не попадают
+  ни сюжет, ни тема, ни название.
+- Ошибки DM переводятся тем же `dungeon_master_error`, что и ошибки хода: те же категории и коды.
+- `build_dungeon_master()` возвращает один объект, годный и как `DungeonMaster`, и как `CampaignMaster`.
+
+Что нужно от Backend (его зона): таблица `campaigns(session_id, title, hidden_plot, room_context,
+intro_narrative)` в SQLite рядом с состоянием, эндпоинт запуска кампании и подстановка сохранённых
+`hidden_plot` и `room_context` в `play_turn` вместо заглушки. Набросок:
+
+```python
+@app.post("/sessions/{session_id}/campaign")
+def start_campaign(session_id: str, body: CampaignRequest):          # body.theme, body.monster
+    def start():
+        ensure_session_loaded(session_id)
+        result = begin_campaign(dm, game_states[session_id], body.theme, Dice(LocalRandomSource()), body.monster)
+        store.save_campaign(session_id, result.state, result.campaign)   # состояние и кампания одной записью
+        game_states[session_id] = result.state
+        return {"title": result.campaign.title, "narration": result.campaign.intro_narrative,
+                "state": public_state(session_id)}
+    response, _ = turn_executor.run(session_id, f"campaign:{session_id}", start, remember=lambda r: True)
+    return response
+```
+
+Повторный запрос на запуск вернёт тот же ответ без нового вызова DM (ключ `campaign:<id>`), а сбой DM
+(`DungeonMasterError`, 502 или статус по `category`) оставит сессию без кампании, и запуск можно повторить.
+
+## Как Backend подключён сейчас и что стоит поправить
+
+`backend/main.py` использует фабрику: `get_orchestrator()` с `@lru_cache(maxsize=1)` вызывает
+`build_orchestrator()` и подставляется в `POST /sessions/{id}/turns` через `Depends`; тесты Backend
+подменяют зависимость на оркестратор с заглушками. Через настоящий маршрут проверено:
+
+| Ситуация | Результат |
+|---|---|
+| DM вернул `ProviderError(category="quota", status_code=402)` | HTTP 502, `detail`: "Исчерпана квота или требуется оплата. Проверьте лимиты и баланс у провайдера. HTTP 402."; в логе `category=quota retryable=False`; ход не применён |
+| Ход с настоящим оркестратором, DM-заглушкой и книгой правил в `keyword` | DM получает `hidden_plot="Test campaign"`, `room_context=""` и (для русской реплики, до добавления словаря) `No specific rules found for this action.`; со словарём та же реплика получает раздел "Jumping" |
+| Повтор того же `action_id` после перезапуска сервера (состояние в SQLite) | `accepted=false`, `STALE_REVISION`: память об `action_id` пропала, но ревизия в базе защищает от двойного применения (HP не изменилось) |
+| `build_orchestrator()` бросает `IntegrationConfigError` (нет `RULES_BOOK_PATH`) | на каждый запрос HTTP 500, **сборка выполняется заново на каждый запрос** (3 запроса - 3 вызова): `lru_cache` не запоминает исключения |
+
+Следствия для Backend (его файл, решает Наталья):
+- Оркестратор строится лениво, при первом запросе. В режимах `rag`/`hybrid` первый игрок оплатит загрузку
+  модели и эмбеддинг книги (при холодном кэше - минуты), а при поломке конфигурации каждый запрос повторяет
+  сборку. Надёжнее строить один раз при старте (`lifespan`, пример выше): приложение тогда не запустится
+  с неверной конфигурацией, а не будет отвечать 500.
+- Сообщение `DungeonMasterError` можно отдавать клиенту как есть (оно безопасно), а по `category` выбирать
+  статус (таблица выше); сейчас любая ошибка DM - 502.
 
 ## Тесты
 
-`python -m unittest discover -s integration/tests -t .` - 35 тестов с реальным движком и реальным
+`python -m unittest discover -s integration/tests -t .` - 77 тестов с реальным движком и реальным
 `RulesService`/`RagRulesService`, DM заменён заглушкой `FakeDM`:
 - оркестратор: применение изменений, контекст для DM (правила, сюжет, состояние, история), отсечка
   устаревшей ревизии без вызова LLM, отбрасывание нарратива при отказе движка, неизвестный персонаж,
   подмена keyword-поиска на RAG;
 - фабрика: настройки из окружения, все режимы правил, кэш индекса, ошибки конфигурации;
-- устойчивость: сбой правил, отсутствие секретов в логах, безопасное сообщение об ошибке DM.
+- устойчивость: недоступные правила и немаскируемые баги, категории ошибок DM, отсутствие секретов
+  в логах;
+- фабрика: быстрый отказ при старте, если модель эмбеддингов недоступна;
+- протокол хода: повтор с тем же `action_id`, устаревшая ревизия, гонка двух игроков, гонка повтора с оригиналом;
+- `IdempotentExecutor`: повтор, границы запоминания, исключения, независимость сессий, отсутствие пересечений;
+- начало кампании: запрос к DM из героев, перемещение через Engine, отсутствие сюжета в состоянии и логах,
+  категории ошибок DM, отказ Engine, ошибки вызывающего кода.
 
 ## Что остаётся Backend и не реализовано
 
-Загрузка/сохранение состояния и compare-and-swap, идемпотентность по `action_id`, сохранение seed
-кубиков, ретраи LLM (см. `docs/integration.md`). Эндпоинт хода и CORS уже есть в ветке Натальи;
-осталось заменить в нём заглушки на `build_orchestrator()` (см. пример выше) и не создавать
-оркестратор на каждый запрос. Адаптер намеренно не решает эти задачи, чтобы не залезать в зону Backend.
+Сохранение `action_id` и результата для повторов после перезапуска, а также seed или результатов
+бросков для воспроизводимого replay. SQLite и `IdempotentExecutor` уже подключены к обработчикам.
 
 ## Известные риски
 

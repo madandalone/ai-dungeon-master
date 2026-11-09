@@ -43,7 +43,7 @@ def fit_messages(
     *,
     repair: bool = False,
 ) -> tuple[list[dict[str, str]], int]:
-    """Keep the largest suffix of history that fits; never truncate messages."""
+    """Reduce optional history by caller-defined priority; never truncate messages."""
     for count in range(history_count, -1, -1):
         messages = build_messages(count)
         size = message_chars(messages)
