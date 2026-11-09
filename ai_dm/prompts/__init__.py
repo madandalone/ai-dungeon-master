@@ -11,6 +11,7 @@ from ai_dm.memory import HistorySelection
 
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent
+_ACTOR_UNKNOWN = "Не указан: определи персонажа по тексту действия."
 
 
 def _read_template(name: str) -> str:
@@ -72,5 +73,7 @@ class PromptTemplates:
             room_context=request.game_state.room_context,
             characters=json.dumps([c.model_dump() for c in request.game_state.active_characters], ensure_ascii=False),
             character_names=json.dumps([c.name for c in request.game_state.active_characters], ensure_ascii=False),
+            acting_character=(json.dumps(request.acting_character, ensure_ascii=False)
+                              if request.acting_character else _ACTOR_UNKNOWN),
             player_action=request.player_action,
         )

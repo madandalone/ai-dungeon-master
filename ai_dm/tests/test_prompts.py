@@ -9,6 +9,7 @@ from unittest.mock import patch
 from ai_dm import prompts
 from ai_dm.dm_engine import AIDungeonMaster
 from ai_dm.errors import ConfigurationError, ContextBudgetError
+from ai_dm.memory import history_record
 from ai_dm.models import CampaignStartRequest, TurnHistoryEntry
 from ai_dm.prompts import PromptTemplates
 from ai_dm.tests.test_dm_engine import CAMPAIGN, TURN, completion, fake_client, turn_request
@@ -69,7 +70,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn(json.dumps([c.model_dump() for c in request.game_state.active_characters],
                                  ensure_ascii=False), text)
         self.assertIn(json.dumps([request.game_state.active_characters[0].name], ensure_ascii=False), text)
-        self.assertIn(json.dumps([item.model_dump() for item in request.history], ensure_ascii=False), text)
+        self.assertIn(json.dumps([history_record(item) for item in request.history], ensure_ascii=False), text)
         self.assertEqual(request, before)
 
     def test_campaign_data_and_repair_details_are_not_interpreted_as_templates(self):

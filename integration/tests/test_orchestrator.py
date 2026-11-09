@@ -68,6 +68,16 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(req.hidden_plot, "cult plot")
         self.assertEqual(req.game_state.location, "tavern")
         self.assertEqual(req.game_state.active_characters[0].inventory, ["Кинжал"])
+        self.assertEqual(req.acting_character, "Элиас")
+
+    def test_dm_is_told_which_party_member_acts(self):
+        state = make_state()
+        mira = Character("c2", "Мира", "Жрица", 8, 8, {}, ())
+        state = GameState(state.session_id, state.revision, state.turn_number, state.location_id,
+                          (*state.characters, mira), {})
+        dm = FakeDM(response())
+        self.play(dm, action=PlayerAction("a1", "s1", "c2", "Я молюсь", 3), state=state)
+        self.assertEqual(dm.requests[0].acting_character, "Мира")
 
     def test_rag_rules_service_is_a_drop_in_replacement_for_russian_actions(self):
         from rules_service import RagRulesService

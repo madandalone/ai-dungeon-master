@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 from ai_dm import main
 from ai_dm.dm_engine import AIDungeonMaster
 from ai_dm.main import DemoSession, HistoryAdapter
+from ai_dm.memory import history_record
 from ai_dm.models import TurnHistoryEntry, TurnRequest, TurnResponse
 from ai_dm.tests.test_dm_engine import CAMPAIGN, TURN, UncheckedDM, completion, fake_client, turn_request
 from engine.dice import Dice, SequenceSource
@@ -61,7 +62,7 @@ class HistoryPromptTests(unittest.TestCase):
         prompt = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
         history_text = prompt.split("### ИСТОРИЯ ПРИНЯТЫХ ХОДОВ (от ранних к поздним):\n", 1)[1]
         history, _ = json.JSONDecoder().raw_decode(history_text)
-        self.assertEqual(history, [item.model_dump() for item in request.history[-10:]])
+        self.assertEqual(history, [history_record(item) for item in request.history[-10:]])
         self.assertIn("текущее состояние ниже имеет приоритет", prompt)
         self.assertIn("не раскрывай", prompt)
         self.assertIn(request.game_state.location, prompt)
