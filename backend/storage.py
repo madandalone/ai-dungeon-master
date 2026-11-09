@@ -13,6 +13,8 @@ from typing import Any
 from ai_dm.models import TurnHistoryEntry
 from engine.models import Character, GameState, InventoryItem
 
+class StateRevisionConflict(Exception):
+    """Stored game state revision differs from the expected revision."""
 
 class SQLiteSessionStore:
     """Small synchronous store; each operation owns its connection and transaction."""
@@ -157,7 +159,7 @@ class SQLiteSessionStore:
 
             previous = self._state_from_json(row[0])
             if state.revision != previous.revision + 1:
-                raise ValueError("Unexpected state revision")
+                raise StateRevisionConflict("Unexpected state revision")
 
             position = connection.execute(
                 "SELECT COALESCE(MAX(position), -1) + 1 "
@@ -165,10 +167,19 @@ class SQLiteSessionStore:
                 (session_id,),
             ).fetchone()[0]
 
-            connection.execute(
-                "UPDATE game_states SET payload = ? WHERE session_id = ?",
-                (self._state_to_json(state), session_id),
+            cursor = connection.execute(
+                "UPDATE game_states SET payload = ? "
+                "WHERE session_id = ? "
+                "AND json_extract(payload, '$.revision') = ?",
+                (
+                    self._state_to_json(state),
+                    session_id,
+                    state.revision - 1,
+                ),
             )
+
+            if cursor.rowcount != 1:
+                raise StateRevisionConflict("Unexpected state revision")
             connection.execute(
                 "INSERT INTO game_histories "
                 "(session_id, position, payload) VALUES (?, ?, ?)",
@@ -207,8 +218,9 @@ class SQLiteSessionStore:
             ).fetchone()
 
         return json.loads(row[0]) if row is not None else None
+
     def save_state(self, session_id: str, state: GameState) -> None:
-        """Persist a state change without adding a DM history entry."""
+        """Persist a state change using optimistic concurrency control."""
         if state.session_id != session_id:
             raise ValueError("Session ID does not match state")
 
@@ -223,5 +235,16 @@ class SQLiteSessionStore:
                     state.revision - 1,
                 ),
             )
-            if cursor.rowcount != 1:
-                raise ValueError("Session not found or unexpected revision")
+
+        if cursor.rowcount != 1:
+            exists = connection.execute(
+                "SELECT 1 FROM game_states WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+
+            if exists is None:
+                raise KeyError(f"Unknown session: {session_id}")
+
+            raise StateRevisionConflict(
+                f"Unexpected revision for session {session_id}"
+            )

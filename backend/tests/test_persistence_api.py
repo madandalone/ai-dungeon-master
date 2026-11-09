@@ -194,5 +194,45 @@ class TestPersistenceAPI(unittest.TestCase):
             first.json()["revision"],
         )
 
+    def test_revision_conflict_returns_409(self):
+        from unittest.mock import patch
+        from backend.storage import StateRevisionConflict
+
+        session_id = self.client.post(
+            "/sessions",
+            json={"name": "Conflict test"},
+        ).json()["id"]
+
+        payload = {
+            "character_id": "hero",
+            "text": "Я открываю дверь",
+            "action_id": "conflicting-turn-123",
+        }
+
+        from backend.main import get_session_store
+
+        store = get_session_store()
+        original_state = store.load_session(session_id)[1]
+
+        with patch.object(
+            store,
+            "save_turn",
+            side_effect=StateRevisionConflict("Unexpected state revision"),
+        ):
+            response = self.client.post(
+                f"/sessions/{session_id}/turns",
+                json=payload,
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.json()["detail"]["code"],
+            "STALE_REVISION",
+        )
+
+        saved_state = store.load_session(session_id)[1]
+        self.assertEqual(saved_state.revision, original_state.revision)
+        self.assertEqual(saved_state.turn_number, original_state.turn_number)
+
 if __name__ == "__main__":
     unittest.main()

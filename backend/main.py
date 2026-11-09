@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from ai_dm.models import StateDelta, TurnHistoryEntry, TurnRequest, TurnResponse
-from backend.storage import SQLiteSessionStore
+from backend.storage import SQLiteSessionStore, StateRevisionConflict
 from engine import add_character, apply_action, to_public_dict
 from engine.commands import AdjustHealth
 from engine.dice import Dice, LocalRandomSource
@@ -19,6 +19,19 @@ from integration.factory import build_orchestrator
 from integration.turns import IdempotentExecutor, make_player_action
 
 app = FastAPI(title="AI Dungeon Master API")
+@app.exception_handler(StateRevisionConflict)
+async def handle_revision_conflict(request, exc: StateRevisionConflict):
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": {
+                "code": "STALE_REVISION",
+                "message": str(exc),
+            }
+        },
+    )
 
 app.add_middleware(
     CORSMiddleware,
