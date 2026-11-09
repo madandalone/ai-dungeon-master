@@ -1,7 +1,17 @@
 import unittest
 
+from engine.events import (
+    ActionRejected,
+    HealthChanged,
+    ItemAdded,
+    ItemRemoved,
+    LocationChanged,
+    SkillCheckResolved,
+    StatChanged,
+    WorldFlagChanged,
+)
 from engine.models import Character, GameState, InventoryItem
-from engine.projection import to_public_dict
+from engine.projection import to_public_dict, to_public_events
 
 
 class PublicProjectionTests(unittest.TestCase):
@@ -47,6 +57,38 @@ class PublicProjectionTests(unittest.TestCase):
         self.assertNotIn("the gate is false", rendered)
         self.assertNotIn("world_flags", rendered)
         self.assertNotIn("narration", rendered)
+
+    def test_public_events_are_typed_and_world_flags_stay_private(self):
+        events = (
+            HealthChanged("a1", 0, "hero", 10, 0, -40),
+            ItemAdded("a1", 1, "hero", "key", 1, 1),
+            ItemRemoved("a1", 2, "hero", "torch", 1, 0),
+            LocationChanged("a1", 3, "start", "crypt"),
+            StatChanged("a1", 4, "hero", "might", 2, 3, 1),
+            SkillCheckResolved("a1", 5, "hero", "might", 12, 3, 15, 14, True),
+            WorldFlagChanged("a1", 6, "secret_door", None, True),
+            ActionRejected("a2", 0, "STALE_REVISION"),
+        )
+
+        public = to_public_events(events)
+
+        self.assertEqual(
+            [event["type"] for event in public],
+            [
+                "health_changed",
+                "item_added",
+                "item_removed",
+                "location_changed",
+                "stat_changed",
+                "skill_check_resolved",
+                "action_rejected",
+            ],
+        )
+        self.assertEqual(public[0]["delta"], -10)
+        self.assertEqual(public[3]["location"], "crypt")
+        self.assertTrue(public[5]["success"])
+        self.assertEqual(public[6]["code"], "STALE_REVISION")
+        self.assertNotIn("secret_door", repr(public))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Literal, Mapping, Union
+from typing import TYPE_CHECKING, Literal, Mapping, Union
+
+if TYPE_CHECKING:
+    from engine.events import GameEvent
 
 
 ErrorCode = Literal[
@@ -82,5 +85,5 @@ class EngineError:
 class EngineResult:
     accepted: bool
     state: GameState
-    events: tuple[object, ...]
+    events: tuple[GameEvent, ...]
     errors: tuple[EngineError, ...]
