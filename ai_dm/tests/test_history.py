@@ -9,7 +9,7 @@ from ai_dm import main
 from ai_dm.dm_engine import AIDungeonMaster
 from ai_dm.main import DemoSession, HistoryAdapter
 from ai_dm.models import TurnHistoryEntry, TurnRequest, TurnResponse
-from ai_dm.tests.test_dm_engine import CAMPAIGN, TURN, completion, fake_client, turn_request
+from ai_dm.tests.test_dm_engine import CAMPAIGN, TURN, UncheckedDM, completion, fake_client, turn_request
 from engine.dice import Dice, SequenceSource
 from engine.models import Character, GameState, InventoryItem, PlayerAction
 from integration import DungeonMasterError
@@ -167,8 +167,7 @@ class DemoSessionTests(unittest.TestCase):
             "new_location": "Недоступный зал",
             "state_updates": [{"character_name": "Элиас", "items_removed": ["Меч"]}],
         }
-        dm = AIDungeonMaster(fake_client(completion(json.dumps(invalid))))
-        result = game.play_turn(action(game, 2), dm, self.rules, self.dice)
+        result = game.play_turn(action(game, 2), UncheckedDM(invalid), self.rules, self.dice)
         self.assertFalse(result.accepted)
         self.assertIs(result.state, game.state)
         self.assertIsNone(result.narration)

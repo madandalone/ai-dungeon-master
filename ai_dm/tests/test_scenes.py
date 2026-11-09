@@ -12,7 +12,7 @@ from ai_dm.main import DEMO_RULES
 from ai_dm.memory import select_history
 from ai_dm.models import TurnResponse
 from ai_dm.scene_scenarios import scene_scenarios
-from ai_dm.tests.test_dm_engine import TURN, completion, fake_client
+from ai_dm.tests.test_dm_engine import TURN, UncheckedDM, completion, fake_client
 from ai_dm.tests.test_history import action, session
 from engine.dice import Dice, SequenceSource
 from rules_service import RulesService
@@ -65,8 +65,7 @@ class SceneTests(unittest.TestCase):
         before = copy.deepcopy(game)
         response = {**TURN, "dm_thoughts": "Сделка заключена.",
                     "state_updates": [{"character_name": "Элиас", "items_removed": ["Молот"]}]}
-        client = fake_client(completion(json.dumps(response)))
-        outcome = game.play_turn(action(game, 1), AIDungeonMaster(client),
+        outcome = game.play_turn(action(game, 1), UncheckedDM(response),
                                  RulesService.from_text(DEMO_RULES), Dice(SequenceSource([])))
         self.assertFalse(outcome.accepted)
         self.assertIsNone(outcome.narration)

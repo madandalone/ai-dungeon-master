@@ -1,6 +1,6 @@
 import unittest
 
-from ai_dm.models import CampaignStartRequest, CampaignStartResponse, TurnResponse
+from ai_dm.models import CampaignStartRequest, CampaignStartResponse, CharacterState, TurnResponse
 from ai_dm.tests.test_dm_engine import CAMPAIGN, TURN, turn_request
 from ai_dm.validation import validate_campaign, validate_turn
 
@@ -72,13 +72,87 @@ class ValidationTests(unittest.TestCase):
         for field in CAMPAIGN:
             self.assertIn(field, str(caught.exception))
 
-    def test_game_rule_checks_remain_with_engine(self):
-        # Removing a nonexistent item must still be decided by Engine after mapping.
+    def test_removing_items_the_character_does_not_hold_is_rejected(self):
         request = turn_request()
+        request.game_state.active_characters[0].inventory = ["Кинжал", "Факел", "Факел"]
+        for removed, missing in [
+            (["Меч"], '["Меч"]'),
+            (["Факел", "Факел", "Факел"], '["Факел"]'),
+            (["кинжал"], '["кинжал"]'),  # Exact names only, as Engine maps them.
+        ]:
+            with self.subTest(removed=removed):
+                response = TurnResponse(**{
+                    **TURN, "state_updates": [{"character_name": "Элиас", "items_removed": removed}],
+                })
+                with self.assertRaises(ValueError) as caught:
+                    validate_turn(response, request=request)
+                message = str(caught.exception)
+                self.assertIn(f"которых у персонажа нет: {missing}", message)
+                self.assertIn('Инвентарь персонажа: ["Кинжал", "Факел", "Факел"]', message)
+
+    def test_removals_across_deltas_follow_engine_order(self):
+        request = turn_request()
+        request.game_state.active_characters[0].inventory = ["Факел"]
+        valid = [
+            [{"character_name": "Элиас", "items_removed": ["Факел"]}],
+            [{"character_name": "Элиас", "items_added": ["Ключ"], "items_removed": ["Ключ", "Факел"]}],
+            [{"character_name": "Элиас", "items_added": ["Ключ"]},
+             {"character_name": "Элиас", "items_removed": ["Ключ"]}],
+        ]
+        for updates in valid:
+            with self.subTest(updates=updates):
+                validate_turn(TurnResponse(**{**TURN, "state_updates": updates}), request=request)
+        invalid = [
+            [{"character_name": "Элиас", "items_removed": ["Факел"]},
+             {"character_name": "Элиас", "items_removed": ["Факел"]}],
+            [{"character_name": "Элиас", "items_removed": ["Ключ"]},
+             {"character_name": "Элиас", "items_added": ["Ключ"]}],
+        ]
+        for updates in invalid:
+            with self.subTest(updates=updates):
+                with self.assertRaisesRegex(ValueError, "которых у персонажа нет"):
+                    validate_turn(TurnResponse(**{**TURN, "state_updates": updates}), request=request)
+
+    def test_inventory_is_checked_per_character(self):
+        request = turn_request()
+        request.game_state.active_characters = [
+            CharacterState(name="Элиас", hp=12, max_hp=12, inventory=["Кинжал"]),
+            CharacterState(name="Мира", hp=8, max_hp=8, inventory=[]),
+        ]
         response = TurnResponse(**{
-            **TURN, "state_updates": [{"character_name": "Элиас", "items_removed": ["Меч"]}],
+            **TURN, "state_updates": [{"character_name": "Мира", "items_removed": ["Кинжал"]}],
         })
-        validate_turn(response, request=request)
+        with self.assertRaises(ValueError) as caught:
+            validate_turn(response, request=request)
+        self.assertIn('state_updates для "Мира"', str(caught.exception))
+        self.assertNotIn('"Элиас"', str(caught.exception))
+
+    def test_unknown_character_is_not_also_reported_as_missing_items(self):
+        response = TurnResponse(**{
+            **TURN, "state_updates": [{"character_name": "Призрак", "items_removed": ["Меч"]}],
+        })
+        with self.assertRaises(ValueError) as caught:
+            validate_turn(response, request=turn_request())
+        self.assertIn("неизвестные character_name", str(caught.exception))
+        self.assertNotIn("которых у персонажа нет", str(caught.exception))
+
+    def test_blank_location_and_items_are_reported_as_blank_not_as_language(self):
+        response = TurnResponse(**{
+            **TURN, "new_location": "  ",
+            "state_updates": [{"character_name": "Элиас", "items_added": ["", "Ключ"]}],
+        })
+        with self.assertRaises(ValueError) as caught:
+            validate_turn(response, request=turn_request())
+        message = str(caught.exception)
+        self.assertIn("Пустые значения недопустимы, поля: new_location, state_updates[0].items_added[0]", message)
+        self.assertNotIn("по-русски", message)
+
+    def test_health_rules_remain_with_engine(self):
+        # Engine clamps HP; the DM does not second-guess the size of a change.
+        response = TurnResponse(**{
+            **TURN, "state_updates": [{"character_name": "Элиас", "hp_change": -100}],
+        })
+        validate_turn(response, request=turn_request())
 
 
 if __name__ == "__main__":

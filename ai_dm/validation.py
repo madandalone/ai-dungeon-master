@@ -2,9 +2,16 @@
 
 import json
 import re
+from collections import Counter
 from collections.abc import Sequence
 
-from ai_dm.models import CampaignStartRequest, CampaignStartResponse, TurnRequest, TurnResponse
+from ai_dm.models import (
+    CampaignStartRequest,
+    CampaignStartResponse,
+    CharacterState,
+    TurnRequest,
+    TurnResponse,
+)
 
 
 _RUSSIAN = frozenset("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя")
@@ -61,6 +68,37 @@ def _language_errors(fields: dict[str, str], references: Sequence[str] = ()) -> 
     return ["Напиши строго по-русски, без иностранных слов, поля: " + ", ".join(invalid) + "."]
 
 
+def _inventory_errors(response: TurnResponse, characters: Sequence[CharacterState]) -> list[str]:
+    """Reject removals the Engine would refuse, so the one repair attempt can fix them.
+
+    Deltas are replayed in the order integration maps them (additions, then removals),
+    so an item added earlier in the same turn may be removed. Engine still decides the result.
+    """
+    held = {character.name: Counter(character.inventory) for character in characters}
+    missing: dict[str, Counter] = {}
+    for update in response.state_updates:
+        inventory = held.get(update.character_name)
+        if inventory is None:
+            continue  # Reported separately as an unknown character_name.
+        inventory.update(update.items_added)
+        for item, quantity in Counter(update.items_removed).items():
+            shortage = quantity - inventory[item]
+            if shortage > 0:
+                missing.setdefault(update.character_name, Counter())[item] += shortage
+            inventory[item] = max(0, inventory[item] - quantity)
+    errors = []
+    for name, items in missing.items():
+        available = sorted(item for character in characters if character.name == name
+                           for item in character.inventory)
+        errors.append(
+            f"state_updates для {json.dumps(name, ensure_ascii=False)} убирает предметы, "
+            f"которых у персонажа нет: {json.dumps(sorted(items.elements()), ensure_ascii=False)}. "
+            f"Инвентарь персонажа: {json.dumps(available, ensure_ascii=False)}. "
+            "В items_removed указывай только эти названия точно и не больше имеющегося количества."
+        )
+    return errors
+
+
 def validate_campaign(
     response: CampaignStartResponse, *, request: CampaignStartRequest,
 ) -> CampaignStartResponse:
@@ -105,7 +143,17 @@ def validate_turn(response: TurnResponse, *, request: TurnRequest) -> TurnRespon
         for item_index, item in enumerate(update.items_added):
             if item not in inventory:
                 generated_names[f"state_updates[{index}].items_added[{item_index}]"] = item
-    errors.extend(_language_errors(generated_names))
+    # Engine refuses blank ids; say so instead of reporting them as a language problem.
+    blank = [field for field, value in generated_names.items() if not value.strip()]
+    if blank:
+        errors.append(
+            "Пустые значения недопустимы, поля: " + ", ".join(blank) + ". "
+            "Если герой не перемещается, верни new_location: null; не добавляй пустые предметы."
+        )
+    errors.extend(_language_errors({
+        field: value for field, value in generated_names.items() if field not in blank
+    }))
+    errors.extend(_inventory_errors(response, request.game_state.active_characters))
     unknown_names = sorted({
         update.character_name for update in response.state_updates
         if update.character_name not in allowed_names
