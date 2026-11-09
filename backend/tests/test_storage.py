@@ -3,7 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from ai_dm.models import TurnHistoryEntry
-from backend.storage import SQLiteSessionStore
+from backend.storage import SQLiteSessionStore, StateRevisionConflict
 from engine.models import Character, GameState
 
 
@@ -74,7 +74,7 @@ class TestSQLiteSessionStore(unittest.TestCase):
 
         self.store.save_turn("test", make_state(1, 8), entry)
 
-        with self.assertRaises(ValueError):
+        with self.assertRaises(StateRevisionConflict):
             self.store.save_turn("test", make_state(1, 5), entry)
 
         _, state, history = self.store.load_session("test")

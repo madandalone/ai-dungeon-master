@@ -13,6 +13,8 @@ from typing import Any
 from ai_dm.models import TurnHistoryEntry
 from engine.models import Character, GameState, InventoryItem
 
+class StateRevisionConflict(Exception):
+    """Stored game state revision differs from the expected revision."""
 
 class SQLiteSessionStore:
     """Small synchronous store; each operation owns its connection and transaction."""
@@ -47,6 +49,13 @@ class SQLiteSessionStore:
                     position INTEGER NOT NULL,
                     payload TEXT NOT NULL,
                     PRIMARY KEY (session_id, position)
+                );
+                CREATE TABLE IF NOT EXISTS processed_turns (
+                    session_id TEXT NOT NULL
+                        REFERENCES sessions(id) ON DELETE CASCADE,
+                    action_id TEXT NOT NULL,
+                    response_json TEXT NOT NULL,
+                    PRIMARY KEY (session_id, action_id)
                 );
             """)
 
@@ -125,11 +134,20 @@ class SQLiteSessionStore:
         history = [TurnHistoryEntry(**json.loads(item[0])) for item in history_rows]
         return row[0], self._state_from_json(row[1]), history
 
-    def save_turn(self, session_id: str, state: GameState, entry: TurnHistoryEntry) -> None:
+    def save_turn(
+        self,
+        session_id: str,
+        state: GameState,
+        entry: TurnHistoryEntry,
+        *,
+        action_id: str | None = None,
+        response: dict[str, Any] | None = None,
+    ) -> None:
         """Atomically save the new state and one history entry."""
         if state.session_id != session_id:
             raise ValueError("Session ID does not match state")
-
+        if (action_id is None) != (response is None):
+            raise ValueError("action_id and response must be provided together")
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT payload FROM game_states WHERE session_id = ?",
@@ -141,7 +159,7 @@ class SQLiteSessionStore:
 
             previous = self._state_from_json(row[0])
             if state.revision != previous.revision + 1:
-                raise ValueError("Unexpected state revision")
+                raise StateRevisionConflict("Unexpected state revision")
 
             position = connection.execute(
                 "SELECT COALESCE(MAX(position), -1) + 1 "
@@ -149,10 +167,19 @@ class SQLiteSessionStore:
                 (session_id,),
             ).fetchone()[0]
 
-            connection.execute(
-                "UPDATE game_states SET payload = ? WHERE session_id = ?",
-                (self._state_to_json(state), session_id),
+            cursor = connection.execute(
+                "UPDATE game_states SET payload = ? "
+                "WHERE session_id = ? "
+                "AND json_extract(payload, '$.revision') = ?",
+                (
+                    self._state_to_json(state),
+                    session_id,
+                    state.revision - 1,
+                ),
             )
+
+            if cursor.rowcount != 1:
+                raise StateRevisionConflict("Unexpected state revision")
             connection.execute(
                 "INSERT INTO game_histories "
                 "(session_id, position, payload) VALUES (?, ?, ?)",
@@ -167,9 +194,33 @@ class SQLiteSessionStore:
                     }, ensure_ascii=False),
                 ),
             )
+            if action_id is not None:
+                connection.execute(
+                    "INSERT INTO processed_turns "
+                    "(session_id, action_id, response_json) VALUES (?, ?, ?)",
+                    (
+                        session_id,
+                        action_id,
+                        json.dumps(response, ensure_ascii=False),
+                    ),
+                )
+    def load_processed_turn(
+        self,
+        session_id: str,
+        action_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the saved API response for a completed turn."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT response_json FROM processed_turns "
+                "WHERE session_id = ? AND action_id = ?",
+                (session_id, action_id),
+            ).fetchone()
+
+        return json.loads(row[0]) if row is not None else None
 
     def save_state(self, session_id: str, state: GameState) -> None:
-        """Persist a state change without adding a DM history entry."""
+        """Persist a state change using optimistic concurrency control."""
         if state.session_id != session_id:
             raise ValueError("Session ID does not match state")
 
@@ -184,5 +235,16 @@ class SQLiteSessionStore:
                     state.revision - 1,
                 ),
             )
-            if cursor.rowcount != 1:
-                raise ValueError("Session not found or unexpected revision")
+
+        if cursor.rowcount != 1:
+            exists = connection.execute(
+                "SELECT 1 FROM game_states WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+
+            if exists is None:
+                raise KeyError(f"Unknown session: {session_id}")
+
+            raise StateRevisionConflict(
+                f"Unexpected revision for session {session_id}"
+            )
