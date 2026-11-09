@@ -37,10 +37,101 @@ async function requestJson(url, options = {}, fetcher = globalThis.fetch) {
   }
 }
 
-function isObject(value) { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
-function isCounter(value) { return Number.isInteger(value) && value >= 0; }
+function isObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isCounter(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
 function isIssueList(value) {
   return Array.isArray(value) && value.every((issue) => isObject(issue) && typeof issue.code === "string");
+}
+
+function eventBase(event) {
+  if (!isObject(event) || typeof event.action_id !== "string" || !isCounter(event.sequence)) return null;
+  return { type: event.type, action_id: event.action_id, sequence: event.sequence };
+}
+
+function normalizePublicEvent(event) {
+  const base = eventBase(event);
+  if (!base) return null;
+  if (event.type === "health_changed"
+    && typeof event.character_id === "string"
+    && Number.isInteger(event.previous_hp)
+    && Number.isInteger(event.new_hp)
+    && Number.isInteger(event.delta)) {
+    return {
+      ...base,
+      character_id: event.character_id,
+      previous_hp: event.previous_hp,
+      new_hp: event.new_hp,
+      delta: event.delta,
+    };
+  }
+  if (["item_added", "item_removed"].includes(event.type)
+    && typeof event.character_id === "string"
+    && typeof event.item_id === "string"
+    && Number.isInteger(event.quantity)
+    && Number.isInteger(event.new_quantity)) {
+    return {
+      ...base,
+      character_id: event.character_id,
+      item_id: event.item_id,
+      quantity: event.quantity,
+      new_quantity: event.new_quantity,
+    };
+  }
+  if (event.type === "location_changed"
+    && typeof event.previous_location === "string"
+    && typeof event.location === "string") {
+    return { ...base, previous_location: event.previous_location, location: event.location };
+  }
+  if (event.type === "stat_changed"
+    && typeof event.character_id === "string"
+    && typeof event.stat === "string"
+    && Number.isInteger(event.previous_value)
+    && Number.isInteger(event.new_value)
+    && Number.isInteger(event.delta)) {
+    return {
+      ...base,
+      character_id: event.character_id,
+      stat: event.stat,
+      previous_value: event.previous_value,
+      new_value: event.new_value,
+      delta: event.delta,
+    };
+  }
+  if (event.type === "skill_check_resolved"
+    && typeof event.character_id === "string"
+    && typeof event.stat === "string"
+    && Number.isInteger(event.roll)
+    && Number.isInteger(event.modifier)
+    && Number.isInteger(event.total)
+    && Number.isInteger(event.difficulty)
+    && typeof event.success === "boolean") {
+    return {
+      ...base,
+      character_id: event.character_id,
+      stat: event.stat,
+      roll: event.roll,
+      modifier: event.modifier,
+      total: event.total,
+      difficulty: event.difficulty,
+      success: event.success,
+    };
+  }
+  if (event.type === "action_rejected" && typeof event.code === "string") {
+    return { ...base, code: event.code };
+  }
+  return null;
+}
+
+export function normalizePublicEvents(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+  return value.map(normalizePublicEvent).filter(Boolean);
 }
 
 function componentStatus(value) {
@@ -106,6 +197,7 @@ export async function submitTurn(sessionId, turn, fetcher = globalThis.fetch) {
       text: turn.text,
     }),
   }, fetcher);
+  const events = normalizePublicEvents(body?.events);
   const valid = isObject(body)
     && typeof body.accepted === "boolean"
     && (body.narration === null || typeof body.narration === "string")
@@ -113,7 +205,8 @@ export async function submitTurn(sessionId, turn, fetcher = globalThis.fetch) {
     && Number.isInteger(body.revision) && body.revision >= 0
     && Number.isInteger(body.turn_number) && body.turn_number >= 0
     && isIssueList(body.errors)
-    && (body.warnings === undefined || isIssueList(body.warnings));
+    && (body.warnings === undefined || isIssueList(body.warnings))
+    && events !== null;
   if (!valid) throw new ApiError("invalid_response");
-  return { ...body, warnings: body.warnings || [] };
+  return { ...body, warnings: body.warnings || [], events };
 }

@@ -544,3 +544,80 @@ input:focus, textarea:focus, select:focus { border-color: var(--warning); }
   0%, 100% { border-color: var(--violet); }
   50% { border-color: var(--cyan); box-shadow: 8px 8px 0 #0b4f60; }
 }
+
+.story-heading { align-items: start; }
+.turn-tools {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 7px 10px;
+  justify-items: end;
+}
+.turn-counters { display: flex; gap: 7px; align-items: center; }
+.revision-badge {
+  display: grid;
+  min-width: 46px;
+  height: 34px;
+  padding-inline: 8px;
+  place-items: center;
+  color: var(--cyan);
+  background: #000;
+  border: 3px solid var(--cyan);
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+.sync-button {
+  display: inline-flex;
+  min-height: 34px;
+  gap: 7px;
+  align-items: center;
+  padding: 5px 9px;
+  font-size: 0.68rem;
+}
+.sync-button[aria-busy="true"] span[aria-hidden="true"] { animation: sync-spin 800ms steps(8, end) infinite; }
+.sync-status {
+  grid-column: 1 / -1;
+  max-width: 240px;
+  color: var(--muted);
+  font-size: 0.64rem;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.turn-receipt {
+  margin: 0 0 20px;
+  padding: 14px;
+  background: #000;
+  border: 3px solid var(--violet);
+  box-shadow: 5px 5px 0 #421363;
+}
+.receipt-heading { display: flex; justify-content: space-between; gap: 14px; align-items: start; }
+.receipt-heading h3 { margin-bottom: 0; font-size: 0.9rem; }
+.receipt-turn { color: var(--cyan); font-size: 0.68rem; font-weight: 900; white-space: nowrap; }
+.receipt-list { display: grid; gap: 8px; margin: 14px 0 0; padding: 0; list-style: none; }
+.receipt-list li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 8px 10px;
+  color: #fff;
+  border-left: 3px solid var(--gold);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+.receipt-list li[data-type="health_changed"] { border-color: var(--heart); }
+.receipt-list li[data-type="location_changed"] { border-color: var(--cyan); }
+.receipt-list li[data-type="skill_check_resolved"] { border-color: var(--violet); }
+.receipt-icon { color: var(--gold); font-weight: 900; text-align: center; }
+.receipt-list li[data-type="health_changed"] .receipt-icon { color: var(--heart); }
+.receipt-list li[data-type="location_changed"] .receipt-icon { color: var(--cyan); }
+
+@keyframes sync-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 620px) {
+  .story-heading { align-items: stretch; flex-direction: column; }
+  .turn-tools { grid-template-columns: 1fr auto; justify-items: start; }
+  .sync-status { justify-self: stretch; max-width: none; text-align: left; }
+}

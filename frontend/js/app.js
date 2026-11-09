@@ -11,6 +11,7 @@ import {
   mergeServerState,
   pinnedContext,
   stateChanges,
+  turnReceipts,
   warningMessageKey,
 } from "./turns.js";
 
@@ -61,6 +62,12 @@ const elements = {
   actionStatus: document.querySelector("#action-status"),
   log: document.querySelector("#log"),
   turnBadge: document.querySelector("#turn-badge"),
+  revisionBadge: document.querySelector("#revision-badge"),
+  syncSession: document.querySelector("#sync-session"),
+  syncStatus: document.querySelector("#sync-status"),
+  turnReceipt: document.querySelector("#turn-receipt"),
+  receiptTurn: document.querySelector("#receipt-turn"),
+  receiptList: document.querySelector("#receipt-list"),
   activeHero: document.querySelector("#active-hero"),
   worldLocation: document.querySelector("#world-location"),
   worldSessionName: document.querySelector("#world-session-name"),
@@ -89,9 +96,12 @@ let currentSection = ["game", "characters", "world", "session"].includes(readUiS
 let backendState = "checking";
 let selectedCharacterId = "";
 let turnPending = false;
+let syncPending = false;
 let pendingTurnAttempt = null;
 let actionFeedback = null;
 let componentStates = { backend: "checking", dm: "unknown", rules: "unknown", history: "unknown" };
+const syncTimes = new Map();
+const receiptsBySession = new Map();
 
 function currentState() {
   return activePublicState(store);
@@ -201,6 +211,11 @@ function renderControls() {
   else elements.actionHint.textContent = t("game.readyHint");
   elements.actionForm.setAttribute("aria-busy", String(turnPending));
   elements.actionSubmit.classList.toggle("is-pending", turnPending);
+  elements.syncSession.disabled = !canReachBackend()
+    || state?.connection !== "server"
+    || turnPending
+    || syncPending;
+  elements.syncSession.setAttribute("aria-busy", String(syncPending));
   const submitLabel = turnPending
     ? "game.thinking"
     : pendingTurnAttempt
@@ -368,6 +383,8 @@ function renderLog() {
   const turnNumber = state?.turn_number || 0;
   elements.turnBadge.textContent = String(turnNumber);
   elements.turnBadge.setAttribute("aria-label", t("game.turns", { count: turnNumber }));
+  elements.revisionBadge.textContent = state ? `R${state.revision}` : "R—";
+  elements.revisionBadge.setAttribute("aria-label", t("game.revision", { count: state?.revision ?? 0 }));
   elements.log.replaceChildren();
   if (!log.length) {
     elements.log.append(emptyMessage(t("game.noLog")));
@@ -385,6 +402,102 @@ function renderLog() {
     text.textContent = entry.text;
     item.append(who, text);
     elements.log.append(item);
+  });
+}
+
+function renderSyncStatus() {
+  const state = currentState();
+  if (syncPending) {
+    elements.syncStatus.textContent = t("game.syncing");
+    return;
+  }
+  if (!state || state.connection !== "server") {
+    elements.syncStatus.textContent = t("game.syncUnavailable");
+    return;
+  }
+  const syncedAt = syncTimes.get(state.session_id);
+  if (!syncedAt) {
+    elements.syncStatus.textContent = t("game.syncNeeded");
+    return;
+  }
+  const locale = getLanguage() === "ru" ? "ru-RU" : "en-US";
+  const time = new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(syncedAt);
+  elements.syncStatus.textContent = t("game.syncedAt", { time });
+}
+
+function signed(value) {
+  return value > 0 ? `+${value}` : String(value);
+}
+
+function receiptText(receipt) {
+  const hero = receipt.characterId ? characterName(receipt.characterId) : "";
+  if (receipt.type === "health_changed") {
+    return t("game.receipt.health", { hero, delta: signed(receipt.delta), value: receipt.value });
+  }
+  if (receipt.type === "item_added") {
+    return t("game.receipt.itemAdded", { hero, item: receipt.item, quantity: receipt.quantity });
+  }
+  if (receipt.type === "item_removed") {
+    return t("game.receipt.itemRemoved", { hero, item: receipt.item, quantity: receipt.quantity });
+  }
+  if (receipt.type === "location_changed") {
+    return t("game.receipt.location", { location: receipt.value });
+  }
+  if (receipt.type === "stat_changed") {
+    return t("game.receipt.stat", {
+      hero,
+      stat: receipt.stat,
+      delta: signed(receipt.delta),
+      value: receipt.value,
+    });
+  }
+  if (receipt.type === "skill_check_resolved") {
+    const result = t(receipt.success ? "game.receipt.success" : "game.receipt.failure");
+    return t("game.receipt.check", {
+      hero,
+      stat: receipt.stat,
+      total: receipt.total,
+      difficulty: receipt.difficulty,
+      result,
+    });
+  }
+  return t("game.receipt.noChange");
+}
+
+function receiptIcon(type) {
+  const icons = {
+    health_changed: "♥",
+    item_added: "+",
+    item_removed: "−",
+    location_changed: "✦",
+    stat_changed: "↑",
+    skill_check_resolved: "◆",
+    no_change: "·",
+  };
+  return icons[type] || "·";
+}
+
+function renderTurnReceipt() {
+  const state = currentState();
+  const receipt = state ? receiptsBySession.get(state.session_id) : null;
+  elements.turnReceipt.hidden = !receipt;
+  elements.receiptList.replaceChildren();
+  if (!receipt) return;
+
+  elements.receiptTurn.textContent = t("game.turns", { count: receipt.turnNumber });
+  receipt.items.forEach((entry) => {
+    const item = document.createElement("li");
+    item.dataset.type = entry.type;
+
+    const icon = document.createElement("span");
+    icon.className = "receipt-icon";
+    icon.textContent = receiptIcon(entry.type);
+    icon.setAttribute("aria-hidden", "true");
+
+    const text = document.createElement("span");
+    text.textContent = receiptText(entry);
+    item.append(icon, text);
+    elements.receiptList.append(item);
   });
 }
 
@@ -493,6 +606,8 @@ function renderAll() {
   renderCharacters();
   renderPinnedContext();
   renderLog();
+  renderSyncStatus();
+  renderTurnReceipt();
   renderWorld();
   renderControls();
   renderActionFeedback();
@@ -555,6 +670,7 @@ async function refreshSession(sessionId, fallbackName = "", announceError = fals
     });
     selectedCharacterId = merged.characters.some((character) => character.id === selectedCharacterId)
       ? selectedCharacterId : "";
+    syncTimes.set(sessionId, new Date());
     persistStore();
     renderAll();
     return true;
@@ -623,6 +739,20 @@ elements.sidebarBackdrop.addEventListener("click", () => {
 });
 elements.recheckHealth.addEventListener("click", checkHealth);
 elements.globalRetry.addEventListener("click", checkHealth);
+elements.syncSession.addEventListener("click", async () => {
+  const state = currentState();
+  if (!canReachBackend() || state?.connection !== "server" || turnPending || syncPending) return;
+
+  syncPending = true;
+  actionFeedback = { kind: "pending", key: "game.syncing" };
+  renderAll();
+  const refreshed = await refreshSession(state.session_id, state.session_name);
+  syncPending = false;
+  actionFeedback = refreshed
+    ? { kind: "success", key: "game.syncComplete" }
+    : { kind: "error", key: "game.syncFailed" };
+  renderAll();
+});
 
 elements.createSessionForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -707,9 +837,15 @@ elements.actionForm.addEventListener("submit", async (event) => {
     const next = applyTurnResult(state, { characterId, text }, result);
     changes = result.accepted ? stateChanges(state, next) : null;
     store = putSession(store, next);
+    syncTimes.set(state.session_id, new Date());
     pendingTurnAttempt = null;
     persistStore();
     if (result.accepted) {
+      const items = turnReceipts(result.events, state, next);
+      receiptsBySession.set(state.session_id, {
+        turnNumber: result.turn_number,
+        items: items.length ? items : [{ type: "no_change" }],
+      });
       elements.actionText.value = "";
       const warningKey = warningMessageKey(result.warnings);
       actionFeedback = warningKey

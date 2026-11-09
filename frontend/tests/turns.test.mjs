@@ -8,6 +8,7 @@ import {
   mergeServerState,
   pinnedContext,
   stateChanges,
+  turnReceipts,
   warningMessageKey,
 } from "../js/turns.js";
 
@@ -78,6 +79,65 @@ test("state changes identify HP, inventory, and location updates", () => {
     location: true,
     characters: { hero: { hp: true, inventory: true } },
   });
+});
+
+test("turn receipts prefer typed server events", () => {
+  const receipts = turnReceipts([
+    {
+      type: "skill_check_resolved",
+      character_id: "hero",
+      stat: "might",
+      total: 15,
+      difficulty: 12,
+      success: true,
+    },
+    { type: "location_changed", location: "crypt" },
+    { type: "action_rejected", code: "INVALID_ITEM" },
+  ], state(), state({ location: "fallback" }));
+
+  assert.deepEqual(receipts, [
+    {
+      type: "skill_check_resolved",
+      characterId: "hero",
+      stat: "might",
+      total: 15,
+      difficulty: 12,
+      success: true,
+    },
+    { type: "location_changed", value: "crypt" },
+  ]);
+});
+
+test("turn receipts fall back to the difference between snapshots", () => {
+  const before = state({
+    characters: [{
+      id: "hero",
+      name: "Hero",
+      hp: 10,
+      max_hp: 10,
+      stats: { might: 2 },
+      inventory: [{ item_id: "torch", name: "Torch", quantity: 1 }],
+    }],
+  });
+  const after = state({
+    location: "crypt",
+    characters: [{
+      id: "hero",
+      name: "Hero",
+      hp: 8,
+      max_hp: 10,
+      stats: { might: 3 },
+      inventory: [{ item_id: "key", name: "Key", quantity: 1 }],
+    }],
+  });
+
+  assert.deepEqual(turnReceipts([], before, after), [
+    { type: "health_changed", characterId: "hero", delta: -2, value: 8 },
+    { type: "stat_changed", characterId: "hero", stat: "might", delta: 1, value: 3 },
+    { type: "item_removed", characterId: "hero", item: "Torch", quantity: 1 },
+    { type: "item_added", characterId: "hero", item: "Key", quantity: 1 },
+    { type: "location_changed", value: "crypt" },
+  ]);
 });
 
 test("failure messages never expose raw backend text", () => {

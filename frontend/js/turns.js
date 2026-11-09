@@ -59,6 +59,116 @@ export function stateChanges(before, after) {
   return { location: Boolean(before && before.location !== after?.location), characters };
 }
 
+function receiptFromEvent(event) {
+  if (event.type === "health_changed") {
+    return {
+      type: event.type,
+      characterId: event.character_id,
+      delta: event.delta,
+      value: event.new_hp,
+    };
+  }
+  if (event.type === "item_added" || event.type === "item_removed") {
+    return {
+      type: event.type,
+      characterId: event.character_id,
+      item: event.item_id,
+      quantity: event.quantity,
+    };
+  }
+  if (event.type === "location_changed") {
+    return { type: event.type, value: event.location };
+  }
+  if (event.type === "stat_changed") {
+    return {
+      type: event.type,
+      characterId: event.character_id,
+      stat: event.stat,
+      delta: event.delta,
+      value: event.new_value,
+    };
+  }
+  if (event.type === "skill_check_resolved") {
+    return {
+      type: event.type,
+      characterId: event.character_id,
+      stat: event.stat,
+      total: event.total,
+      difficulty: event.difficulty,
+      success: event.success,
+    };
+  }
+  return null;
+}
+
+function inventoryQuantities(character) {
+  return new Map((character?.inventory || []).map((item) => [
+    item.item_id,
+    { name: item.name || item.item_id, quantity: item.quantity },
+  ]));
+}
+
+function snapshotReceipts(before, after) {
+  if (!before || !after) return [];
+  const receipts = [];
+  const beforeCharacters = new Map((before.characters || []).map((character) => [character.id, character]));
+
+  (after.characters || []).forEach((character) => {
+    const previous = beforeCharacters.get(character.id);
+    if (!previous) return;
+
+    const hpDelta = character.hp - previous.hp;
+    if (hpDelta !== 0) {
+      receipts.push({
+        type: "health_changed",
+        characterId: character.id,
+        delta: hpDelta,
+        value: character.hp,
+      });
+    }
+
+    const stats = new Set([...Object.keys(previous.stats || {}), ...Object.keys(character.stats || {})]);
+    stats.forEach((stat) => {
+      const oldValue = previous.stats?.[stat];
+      const newValue = character.stats?.[stat];
+      if (!Number.isInteger(oldValue) || !Number.isInteger(newValue) || oldValue === newValue) return;
+      receipts.push({
+        type: "stat_changed",
+        characterId: character.id,
+        stat,
+        delta: newValue - oldValue,
+        value: newValue,
+      });
+    });
+
+    const oldItems = inventoryQuantities(previous);
+    const newItems = inventoryQuantities(character);
+    const itemIds = new Set([...oldItems.keys(), ...newItems.keys()]);
+    itemIds.forEach((itemId) => {
+      const oldQuantity = oldItems.get(itemId)?.quantity || 0;
+      const newQuantity = newItems.get(itemId)?.quantity || 0;
+      const delta = newQuantity - oldQuantity;
+      if (delta === 0) return;
+      receipts.push({
+        type: delta > 0 ? "item_added" : "item_removed",
+        characterId: character.id,
+        item: newItems.get(itemId)?.name || oldItems.get(itemId)?.name || itemId,
+        quantity: Math.abs(delta),
+      });
+    });
+  });
+
+  if (before.location !== after.location) {
+    receipts.push({ type: "location_changed", value: after.location });
+  }
+  return receipts;
+}
+
+export function turnReceipts(events, before, after) {
+  const projected = (events || []).map(receiptFromEvent).filter(Boolean);
+  return projected.length ? projected : snapshotReceipts(before, after);
+}
+
 export function failureMessageKey(error) {
   const code = error?.code || error?.errors?.[0]?.code || "unknown";
   const keys = {

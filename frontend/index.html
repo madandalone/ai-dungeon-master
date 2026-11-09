@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#000000">
     <title>AI Dungeon Master</title>
-    <link rel="stylesheet" href="styles.css?v=20261020-3">
+    <link rel="stylesheet" href="styles.css?v=20261109-1">
   </head>
   <body>
     <div class="app-shell" id="app-shell">
@@ -58,8 +58,19 @@
         <section class="view is-active" id="view-game" data-view="game" aria-labelledby="section-title">
           <div class="game-layout">
             <article class="pixel-panel story-panel">
-              <div class="panel-heading"><div><p class="panel-eyebrow" data-i18n="game.storyEyebrow">ЛЕТОПИСЬ</p><h2 data-i18n="game.storyTitle">История приключения</h2></div><span class="turn-badge" id="turn-badge">0</span></div>
+              <div class="panel-heading story-heading">
+                <div><p class="panel-eyebrow" data-i18n="game.storyEyebrow">ЛЕТОПИСЬ</p><h2 data-i18n="game.storyTitle">История приключения</h2></div>
+                <div class="turn-tools">
+                  <div class="turn-counters"><span class="turn-badge" id="turn-badge">0</span><span class="revision-badge" id="revision-badge">R0</span></div>
+                  <button class="secondary-button sync-button" id="sync-session" type="button" data-i18n-aria-label="game.syncAria" aria-label="Обновить состояние с сервера"><span aria-hidden="true">↻</span><span data-i18n="game.sync">Обновить</span></button>
+                  <span class="sync-status" id="sync-status" aria-live="polite"></span>
+                </div>
+              </div>
               <ol id="log" class="story-log" aria-live="polite"></ol>
+              <section class="turn-receipt" id="turn-receipt" aria-labelledby="turn-receipt-title" hidden>
+                <div class="receipt-heading"><div><p class="panel-eyebrow" data-i18n="game.receiptEyebrow">ИТОГ ХОДА</p><h3 id="turn-receipt-title" data-i18n="game.receiptTitle">Что изменилось</h3></div><span class="receipt-turn" id="receipt-turn"></span></div>
+                <ul class="receipt-list" id="receipt-list" aria-live="polite"></ul>
+              </section>
               <form id="action-form" class="action-console">
                 <label><span data-i18n="game.actor">Кто действует</span><select id="acting-character" name="acting-character" required></select></label>
                 <label><span data-i18n="game.action">Действие героя</span><textarea id="action-text" name="action-text" rows="3" maxlength="500" required data-i18n-placeholder="game.actionPlaceholder" placeholder="Что делает ваш герой?"></textarea></label>
