@@ -11,12 +11,16 @@ from rules_service.embedder import Embedder
 from rules_service.errors import RulesUnavailableError
 
 
+FALSE_VALUES = ("0", "false", "no", "off")
+
+
 @dataclass(frozen=True)
 class RulesSettings:
     book_path: Path
     mode: str = "keyword"
     cache_dir: Path = DEFAULT_CACHE_DIR
     embedding_model: str | None = None
+    lexicon: bool = True
 
     def __post_init__(self):
         if self.mode not in MODES:
@@ -33,6 +37,7 @@ class RulesSettings:
             mode=env.get("RULES_MODE", "keyword").strip().lower(),
             cache_dir=Path(env.get("RULES_CACHE_DIR", str(DEFAULT_CACHE_DIR))),
             embedding_model=env.get("RULES_EMBEDDING_MODEL") or None,
+            lexicon=env.get("RULES_LEXICON", "1").strip().lower() not in FALSE_VALUES,
         )
 
 
@@ -42,10 +47,20 @@ def build_rules_provider(settings: RulesSettings, embedder: Embedder | None = No
         raise IntegrationConfigError(f"Rule book not found: {settings.book_path}")
     try:
         return build_rules_service(
-            settings.book_path, settings.mode, settings.cache_dir, settings.embedding_model, embedder
+            settings.book_path, settings.mode, settings.cache_dir, settings.embedding_model, embedder, settings.lexicon
         )
     except RulesUnavailableError as exc:
         raise IntegrationConfigError(f"RULES_MODE={settings.mode} needs the embedding model: {exc}") from exc
+
+
+def build_dungeon_master():
+    """The real AI Dungeon Master (lazy LLM client; it needs OPENAI_API_KEY only when it is first called).
+
+    One object plays both roles: it is the DungeonMaster for turns and the CampaignMaster for campaign starts.
+    """
+    from ai_dm.dm_engine import AIDungeonMaster
+
+    return AIDungeonMaster()
 
 
 def build_orchestrator(
@@ -59,8 +74,4 @@ def build_orchestrator(
     """
     if rules is None:
         rules = build_rules_provider(settings or RulesSettings.from_env())
-    if dm is None:
-        from ai_dm.dm_engine import AIDungeonMaster
-
-        dm = AIDungeonMaster()
-    return TurnOrchestrator(dm, rules)
+    return TurnOrchestrator(dm or build_dungeon_master(), rules)
