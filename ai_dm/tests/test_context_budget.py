@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from ai_dm import dm_engine
 from ai_dm.context import message_chars
+from ai_dm.memory import history_record
 from ai_dm.dm_engine import AIDungeonMaster
 from ai_dm.errors import ConfigurationError, ContextBudgetError, InvalidResponseError
 from ai_dm.models import CampaignStartRequest, TurnResponse
@@ -91,7 +92,7 @@ class ContextBudgetTests(unittest.TestCase):
             self.invoke(client, request)
         actual = client.chat.completions.create.call_args.kwargs["messages"]
         self.assertEqual(actual, expected)
-        self.assertEqual(history_in(actual), [item.model_dump() for item in before.history[-3:]])
+        self.assertEqual(history_in(actual), [history_record(item) for item in before.history[-3:]])
         self.assertIn(request.rules_summary, actual[1]["content"])
         self.assertIn(request.hidden_plot, actual[1]["content"])
         self.assertIn(request.player_action, actual[1]["content"])
@@ -119,7 +120,7 @@ class ContextBudgetTests(unittest.TestCase):
         request = turn_request()
         request.history = [entry(i) for i in range(15)]
         messages = self.messages_for(request)[0]
-        self.assertEqual(history_in(messages), [item.model_dump() for item in request.history[-10:]])
+        self.assertEqual(history_in(messages), [history_record(item) for item in request.history[-10:]])
 
     def test_each_required_field_can_prevent_call_even_after_dropping_history(self):
         for field in ("rules_summary", "hidden_plot", "player_action", "room_context", "inventory"):
@@ -156,7 +157,7 @@ class ContextBudgetTests(unittest.TestCase):
             self.invoke(client, request)
         first, second = [call.kwargs["messages"] for call in client.chat.completions.create.call_args_list]
         self.assertEqual(first, initial)
-        self.assertEqual(history_in(second), [item.model_dump() for item in request.history[-3:]])
+        self.assertEqual(history_in(second), [history_record(item) for item in request.history[-3:]])
         self.assertEqual(second[2:], full_repair[2:])
         self.assertEqual(second[-2], {"role": "assistant", "content": "{}"})
         self.assertLessEqual(size_of(second), budget)
@@ -270,7 +271,7 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertEqual(result.state.revision, game.state.revision + 1)
         self.assertEqual(history, before)
         messages = client.chat.completions.create.call_args.kwargs["messages"]
-        self.assertEqual(history_in(messages), [item.model_dump() for item in history[-10:]])
+        self.assertEqual(history_in(messages), [history_record(item) for item in history[-10:]])
 
     def test_message_measurement_uses_characters_not_utf8_bytes(self):
         messages = [{"role": "user", "content": 'ё🗝"\n\\'}]

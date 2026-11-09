@@ -63,12 +63,15 @@ class TurnOrchestrator:
         rules, rules_failed = self._fetch_rules(action)
         rules_ms = _elapsed_ms(started)
 
+        # The precheck above guarantees the acting character exists in this state.
+        actor = next(c.name for c in state.characters if c.id == action.character_id)
         request = TurnRequest(
             rules_summary=rules,
             hidden_plot=hidden_plot,
             game_state=to_dm_state(state, room_context),
             player_action=action.text,
             history=list(history or ()),
+            acting_character=actor,
         )
         started = time.perf_counter()
         response = self._ask_dm(action, request)

@@ -7,7 +7,7 @@ from unittest.mock import patch
 from ai_dm.context import message_chars
 from ai_dm.dm_engine import AIDungeonMaster
 from ai_dm.errors import ContextBudgetError
-from ai_dm.memory import select_history
+from ai_dm.memory import history_record, select_history
 from ai_dm.models import TurnHistoryEntry
 from ai_dm.main import DEMO_RULES
 from ai_dm.tests.test_dm_engine import TURN, completion, fake_client, turn_request
@@ -62,9 +62,9 @@ class MemoryTests(unittest.TestCase):
         before = request.model_copy(deep=True)
         messages, = self.generate(request)
         recent, memories = prompt_blocks(messages)
-        self.assertEqual(recent, [entry.model_dump() for entry in request.history[-10:]])
+        self.assertEqual(recent, [history_record(entry) for entry in request.history[-10:]])
         self.assertEqual(memories, [
-            {"history_position": index + 1, **request.history[index].model_dump()}
+            {"history_position": index + 1, **history_record(request.history[index])}
             for index in (0, 2)
         ])
         self.assertEqual(request, before)

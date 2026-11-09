@@ -23,6 +23,7 @@ def scene_scenarios() -> dict[str, SceneScenario]:
             active_characters=[CharacterState(name="Элиас", hp=12, max_hp=12, inventory=["Кинжал"])],
         ),
         player_action="Осматриваю стол ещё раз тем же способом.",
+        acting_character="Элиас",
         history=[TurnHistoryEntry(
             player_action="Осматриваю стол.",
             narrative="На столе виден серебряный ключ; иных деталей ты не замечаешь.",

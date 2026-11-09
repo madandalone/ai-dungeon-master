@@ -26,6 +26,11 @@ def _terms(text: str) -> set[str]:
             if len(word) > 2 and word not in _STOP_WORDS}
 
 
+def history_record(entry: TurnHistoryEntry) -> dict[str, str]:
+    """Prompt view of an entry: character_id is an opaque Engine id the DM cannot resolve."""
+    return entry.model_dump(exclude={"character_id"})
+
+
 def _identity(entry: TurnHistoryEntry) -> tuple[str, str, str]:
     return entry.player_action, entry.narrative, entry.dm_notes
 
@@ -57,7 +62,7 @@ def select_history(request: TurnRequest) -> HistorySelection:
     rarer matching words score higher, ties prefer more recent records.
     """
     split = max(0, len(request.history) - RECENT_LIMIT)
-    recent = tuple(entry.model_dump() for entry in request.history[split:])
+    recent = tuple(history_record(entry) for entry in request.history[split:])
     action_terms = _terms(request.player_action)
     location_terms = _terms(request.game_state.location)
     query = action_terms | location_terms
@@ -84,6 +89,6 @@ def select_history(request: TurnRequest) -> HistorySelection:
         return action_score, location_score, position
 
     selected = sorted(candidates, key=rank, reverse=True)[:MEMORY_LIMIT]
-    memories = tuple({"history_position": position + 1, **entry.model_dump()}
+    memories = tuple({"history_position": position + 1, **history_record(entry)}
                      for position, entry, _ in selected)
     return HistorySelection(recent, memories)
