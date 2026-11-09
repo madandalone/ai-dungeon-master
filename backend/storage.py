@@ -48,6 +48,13 @@ class SQLiteSessionStore:
                     payload TEXT NOT NULL,
                     PRIMARY KEY (session_id, position)
                 );
+                CREATE TABLE IF NOT EXISTS processed_turns (
+                    session_id TEXT NOT NULL
+                        REFERENCES sessions(id) ON DELETE CASCADE,
+                    action_id TEXT NOT NULL,
+                    response_json TEXT NOT NULL,
+                    PRIMARY KEY (session_id, action_id)
+                );
             """)
 
     @staticmethod
@@ -125,11 +132,20 @@ class SQLiteSessionStore:
         history = [TurnHistoryEntry(**json.loads(item[0])) for item in history_rows]
         return row[0], self._state_from_json(row[1]), history
 
-    def save_turn(self, session_id: str, state: GameState, entry: TurnHistoryEntry) -> None:
+    def save_turn(
+        self,
+        session_id: str,
+        state: GameState,
+        entry: TurnHistoryEntry,
+        *,
+        action_id: str | None = None,
+        response: dict[str, Any] | None = None,
+    ) -> None:
         """Atomically save the new state and one history entry."""
         if state.session_id != session_id:
             raise ValueError("Session ID does not match state")
-
+        if (action_id is None) != (response is None):
+            raise ValueError("action_id and response must be provided together")
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT payload FROM game_states WHERE session_id = ?",
@@ -167,7 +183,30 @@ class SQLiteSessionStore:
                     }, ensure_ascii=False),
                 ),
             )
+            if action_id is not None:
+                connection.execute(
+                    "INSERT INTO processed_turns "
+                    "(session_id, action_id, response_json) VALUES (?, ?, ?)",
+                    (
+                        session_id,
+                        action_id,
+                        json.dumps(response, ensure_ascii=False),
+                    ),
+                )
+    def load_processed_turn(
+        self,
+        session_id: str,
+        action_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the saved API response for a completed turn."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT response_json FROM processed_turns "
+                "WHERE session_id = ? AND action_id = ?",
+                (session_id, action_id),
+            ).fetchone()
 
+        return json.loads(row[0]) if row is not None else None
     def save_state(self, session_id: str, state: GameState) -> None:
         """Persist a state change without adding a DM history entry."""
         if state.session_id != session_id:

@@ -147,10 +147,16 @@ def ensure_session_loaded(session_id: str) -> None:
 
     restored = get_session_store().load_session(session_id)
     if restored is None:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found",
+        )
 
     name, state, history = restored
-    sessions[session_id] = GameSession(id=session_id, name=name)
+    sessions[session_id] = GameSession(
+        id=session_id,
+        name=name,
+    )
     game_states[session_id] = state
     game_histories[session_id] = history
 
@@ -285,7 +291,6 @@ def process_action(session_id: str, action_data: PlayerActionRequest):
     )
     return response
 
-
 @app.post("/sessions/{session_id}/turns")
 def process_turn(
     session_id: str,
@@ -295,8 +300,18 @@ def process_turn(
     action_id = turn_data.action_id or str(uuid4())
 
     def execute_turn():
-        # Важно читать состояние внутри блокировки сессии.
+        # Загружаем состояние внутри блокировки сессии.
         ensure_session_loaded(session_id)
+
+        # Проверяем, не был ли этот ход выполнен ранее.
+        # Работает даже после перезапуска Backend.
+        saved_response = get_session_store().load_processed_turn(
+            session_id,
+            action_id,
+        )
+        if saved_response is not None:
+            return saved_response
+
         state = game_states[session_id]
 
         action = make_player_action(
@@ -316,7 +331,10 @@ def process_turn(
                 history=game_histories[session_id],
             )
         except IntegrationError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc),
+            ) from exc
 
         if outcome.accepted:
             entry = TurnHistoryEntry(
@@ -326,17 +344,41 @@ def process_turn(
                 dm_notes=outcome.dm_notes or "",
             )
 
+            # Формируем ответ для сохранения в SQLite.
+            response = {
+                "accepted": True,
+                "narration": outcome.narration,
+                "state": to_public_dict(
+                    outcome.state,
+                    session_name=sessions[session_id].name,
+                    log=[],
+                ),
+                "revision": outcome.state.revision,
+                "turn_number": outcome.state.turn_number,
+                "errors": [],
+            }
+
+            # Сохраняем состояние, историю и результат хода
+            # в одной транзакции.
             get_session_store().save_turn(
                 session_id,
                 outcome.state,
                 entry,
+                action_id=action_id,
+                response=response,
             )
 
+            # Обновляем состояние в оперативной памяти
+            # только после успешного сохранения в SQLite.
             game_states[session_id] = outcome.state
             game_histories[session_id].append(entry)
 
+            return response
+
+        # Отклонённый ход не сохраняем в processed_turns:
+        # его можно будет повторить.
         return {
-            "accepted": outcome.accepted,
+            "accepted": False,
             "narration": outcome.narration,
             "state": public_state(session_id, include_history=False),
             "revision": outcome.state.revision,
