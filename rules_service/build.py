@@ -38,4 +38,3 @@ def build_rules_service(
     embedder.encode(["warm-up"])
     rag = RagRulesService.from_text(text, embedder, cache_dir)
     return rag if mode == "rag" else HybridRulesService(keyword, rag)
-

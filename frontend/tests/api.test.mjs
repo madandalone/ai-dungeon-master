@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  ApiError, createCharacter, createSession, fetchHealth, fetchSessionState, resolveApiBase, submitTurn,
+  ApiError, createCharacter, createSession, fetchHealth, fetchSessionState,
+  normalizePublicEvents, resolveApiBase, submitTurn,
 } from "../js/api.js";
 
 function response(body, { ok = true, status = 200 } = {}) {
@@ -103,6 +104,35 @@ test("turn request sends the backend contract", async () => {
   });
   assert.equal(result.turn_number, 1);
   assert.deepEqual(result.warnings, []);
+  assert.deepEqual(result.events, []);
+});
+
+test("public turn events are allowlisted and private fields are discarded", () => {
+  const events = normalizePublicEvents([
+    {
+      type: "health_changed",
+      action_id: "a1",
+      sequence: 0,
+      character_id: "hero",
+      previous_hp: 10,
+      new_hp: 8,
+      delta: -2,
+      dm_notes: "private",
+    },
+    { type: "world_flag_changed", action_id: "a1", sequence: 1, key: "secret", value: true },
+    { type: "future_event", action_id: "a1", sequence: 2, hidden_plot: "private" },
+  ]);
+
+  assert.deepEqual(events, [{
+    type: "health_changed",
+    action_id: "a1",
+    sequence: 0,
+    character_id: "hero",
+    previous_hp: 10,
+    new_hp: 8,
+    delta: -2,
+  }]);
+  assert.equal(normalizePublicEvents({}), null);
 });
 
 test("turn response accepts structured non-fatal warnings", async () => {

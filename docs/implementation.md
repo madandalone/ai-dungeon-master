@@ -58,11 +58,12 @@ public history.
 
 ### Implemented experience
 
-- **Game** submits a live turn, shows player and Dungeon Master messages, and
-  refreshes the active hero HUD from the returned server state.
+- **Game** submits a live turn, shows player and Dungeon Master messages,
+  renders a compact receipt of state changes, and refreshes the active hero
+  HUD from the returned server state.
 - **Heroes** renders server characters with an automatically selected
-  archetype icon, accessible HP progress, stats, and inventory. The creation
-  form is visibly disabled until Backend provides a character endpoint.
+  archetype icon, accessible HP progress, stats, and inventory. In a server
+  session, the creation form saves a new hero through Backend.
 - **World** summarizes the current location, session, party, and log size.
 - **Session** checks Backend health, creates a session, validates a session ID
   through Backend, and switches between cached server snapshots.
@@ -71,6 +72,10 @@ A compact sticky HUD keeps the active session, selected hero with current HP,
 and latest public event visible while any section is scrolled. Long names and
 events are truncated visually but retain the full event in the element title.
 On narrow screens the latest event moves to a second row.
+
+The game panel shows the current turn and revision. A manual refresh reloads
+the authoritative public snapshot without clearing a typed action. The UI
+shows when the active session was last synchronized in the current tab.
 
 When the Backend is unavailable, the application enters an explicit read-only
 mode: saved data and navigation remain available, while mutation forms are
@@ -83,11 +88,13 @@ The API base follows the Frontend hostname on port 8000. The client implements:
 - `GET /health`, healthy only for a successful `{ "status": "ok" }` response;
 - `POST /sessions` with `{ "name": string }`, expecting string `id` and `name`;
 - `GET /sessions/{id}/state`, expecting the public Engine projection;
+- `POST /sessions/{id}/characters` with the observed revision and validated
+  character fields, expecting the updated public Engine projection;
 - `POST /sessions/{id}/turns` with a client-generated `action_id`, the last
   observed `expected_revision`, `character_id`, and `text`, expecting
   acceptance, public narration, current state, revision, turn number, and
-  structured errors. A structured `warnings` array is optional for backward
-  compatibility and defaults to an empty list.
+  structured errors. Structured `warnings` and public `events` arrays are
+  optional during Backend migration and default to empty lists.
 
 Network, missing-session, DM-unavailable, and malformed-response failures are
 kept separate. Failed turns retain the action text and do not append a false
@@ -95,6 +102,11 @@ chronicle entry. A retry of the same unchanged action reuses its `action_id`.
 On HTTP 409 the client discards that attempt, refreshes the session, preserves
 the text, and asks the player to review and submit it again. Raw Backend error
 messages are not shown to the player.
+
+Known public events are copied through an explicit field allowlist. Unknown
+events and private fields are discarded. Until Backend returns `events`, the
+turn receipt derives HP, inventory, stat, and location changes from the old
+and new public snapshots.
 
 Browser use still depends on Backend CORS configuration. The current turn
 branch allows port 5500; the team must also allow the documented development
@@ -106,10 +118,9 @@ origin on port 4173.
 parity, session migration and isolation, API response validation, turn state
 merging, safe failure messages, archetype selection, and HP thresholds.
 
-The Frontend does not implement authoritative character creation,
-authentication, cross-device persistence, or multiplayer updates. Public
-history is tab-local because Backend history currently includes private DM
-notes and has no separate public endpoint.
+The Frontend does not implement authentication, cross-device persistence, or
+multiplayer updates. Public history is tab-local because Backend history
+currently includes private DM notes and has no separate public endpoint.
 
 ### Integration-ready UI contract
 
@@ -150,10 +161,9 @@ marks Rules Service as degraded. Warning messages from Backend are deliberately
 ignored so provider details cannot leak into the UI. Errors remain rejection
 signals and use the red frame.
 
-Future character creation should add a dedicated API client function and only
-then enable the existing form. Future public history should populate the
-allowlisted `log` entries in the public state or expose a separate public
-endpoint; it must never reuse history objects containing `dm_notes`.
+Future public history should populate the allowlisted `log` entries in the
+public state or expose a separate public endpoint; it must never reuse history
+objects containing `dm_notes`.
 
 ## Game Engine
 
@@ -168,6 +178,7 @@ The public package exports:
 ```python
 apply_action(state, action, commands, dice)
 to_public_dict(state, session_name="", log=())
+to_public_events(events)
 ```
 
 ### File structure
@@ -254,8 +265,8 @@ The Engine checks the text only for emptiness. It never interprets it.
 - `events`;
 - `errors`.
 
-The runtime events are typed dataclasses, although the `events` annotation in
-`EngineResult` is currently `tuple[object, ...]`.
+The `events` annotation is `tuple[GameEvent, ...]`, so the result contract uses
+the same closed event union as the runtime.
 
 ### Commands
 
@@ -296,6 +307,11 @@ Events do not currently carry `session_id`, resulting `revision`,
 `turn_number`, timestamps, or persistent event IDs. A Backend can derive the
 session and revision from the action and result, but the persisted event
 envelope still needs an agreed contract.
+
+`to_public_events(events)` converts safe events to JSON-ready dictionaries
+with a stable `type`, `action_id`, and `sequence`. It includes health, item,
+location, stat, skill-check, and rejection facts. `WorldFlagChanged` is always
+omitted, and Engine error messages are never copied into the public event.
 
 ### `apply_action(...)`
 
@@ -363,9 +379,8 @@ The Engine uses `dataclasses.replace`, tuples, and copied mappings for its own
 updates and does not mutate the supplied state during normal command
 execution.
 
-Frozen dataclasses do not deeply freeze `Mapping` instances supplied by a
-caller. Callers must not mutate `stats` or `world_flags` dictionaries after
-constructing a state.
+Model construction copies `stats` and `world_flags` into read-only mappings,
+so later mutation of caller-owned dictionaries cannot alter Engine state.
 
 An invalid or exhausted injected `RandomSource` currently raises
 `RuntimeError` during the commit pass rather than returning `EngineResult`.
@@ -430,7 +445,7 @@ not reveal campaign content.
 
 ### Unit tests
 
-The current suite contains 15 `unittest` tests and covers:
+The current suite contains 20 `unittest` tests and covers:
 
 - input state preservation and creation of a new accepted state;
 - exactly one revision/turn increment;
@@ -445,6 +460,7 @@ The current suite contains 15 `unittest` tests and covers:
 - no random-source consumption during failed preview;
 - fixed and exhausted dice sources;
 - filtering of Engine-internal fields from the public projection.
+- allowlisted public event projection without world flags.
 
 Frontend tests use Node's built-in test runner. Backend and integration suites
 cover the current turn orchestration separately.
@@ -455,7 +471,9 @@ Backend ownership:
 
 - extend `GET /health` with the public `components.dm`, `components.rules`, and
   `components.history` statuses described above;
-- persist idempotency keys if the Backend is deployed in multiple processes;
+- return `events: to_public_events(outcome.events)` from the turn endpoint;
+  the Frontend already accepts this field and has a snapshot-diff fallback;
+- add multi-process coordination around session revisions and processed turns;
 - add session listing or deletion only when the product needs those flows.
 
 Rules and integration ownership:
@@ -476,7 +494,8 @@ AI Dungeon Master ownership:
 
 - SQLite persists sessions, state, characters and history, but is intended for
   the local single-process prototype.
-- Idempotency keys remain process-local and are lost after a restart.
+- Processed turn responses survive restarts in SQLite, while per-session
+  execution locking remains process-local.
 - Sessions can be restored by ID, but there is no server-side session list.
 - Combat is limited to generic HP adjustment and skill checks; there is no
   initiative, action economy, conditions, armor, or encounter model.
