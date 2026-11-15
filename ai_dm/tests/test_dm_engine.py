@@ -28,6 +28,8 @@ from rules_service import RulesService
 
 
 TURN = {
+    "requires_check": False,
+    "check": None,
     "narrative": "Вы замечаете дверь.",
     "state_updates": [],
     "new_location": None,

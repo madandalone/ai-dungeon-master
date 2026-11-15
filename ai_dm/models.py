@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
 
 # --- Входной контекст от Game Engine и Rules Service ---
@@ -7,6 +7,8 @@ class CharacterState(BaseModel):
     hp: int
     max_hp: int
     inventory: List[str]
+    # Характеристики из Engine: название -> модификатор проверки (бросок d20 + значение).
+    stats: Dict[str, int] = Field(default_factory=dict)
 
 class GameState(BaseModel):
     location: str
@@ -22,6 +24,17 @@ class TurnHistoryEntry(BaseModel):
     dm_notes: str = ""
 
 
+class CheckResult(BaseModel):
+    """Итог проверки, брошенной Game Engine; DM получает его на втором этапе хода."""
+
+    stat: str
+    difficulty: int
+    roll: int
+    modifier: int
+    total: int
+    success: bool
+
+
 class TurnRequest(BaseModel):
     rules_summary: str        # Краткие правила игры
     hidden_plot: str          # Скрытый сюжет (видит только Мастер)
@@ -30,6 +43,8 @@ class TurnRequest(BaseModel):
     history: List[TurnHistoryEntry] = Field(default_factory=list)
     # Имя персонажа, совершающего действие; пустая строка — не указан (старые вызовы).
     acting_character: str = ""
+    # Второй этап хода: результат уже выполненной проверки; None — проверки ещё не было.
+    check_result: Optional[CheckResult] = None
 
     @model_validator(mode="after")
     def _acting_character_is_active(self) -> "TurnRequest":
@@ -46,7 +61,23 @@ class StateDelta(BaseModel):
     items_added: List[str] = Field(default_factory=list)
     items_removed: List[str] = Field(default_factory=list)
 
+class CheckRequest(BaseModel):
+    """Запрос проверки характеристики; бросок выполняет Game Engine, а не модель."""
+
+    stat: str = Field(
+        description="Название характеристики действующего персонажа, точно как в его stats"
+    )
+    difficulty: int = Field(description="Сложность проверки: целое число от 5 до 30")
+
+
 class TurnResponse(BaseModel):
+    # Решение о проверке стоит первым: модель принимает его до написания повествования.
+    requires_check: bool = Field(
+        False, description="true, если исход действия должен решить бросок кубика в Game Engine"
+    )
+    check: Optional[CheckRequest] = Field(
+        None, description="Параметры проверки при requires_check: true, иначе null"
+    )
     narrative: str = Field(
         description="Художественное описание последствий хода для игрока (атмосферно, от 2-го лица)"
     )

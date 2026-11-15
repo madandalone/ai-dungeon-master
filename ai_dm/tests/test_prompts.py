@@ -10,7 +10,7 @@ from ai_dm import prompts
 from ai_dm.dm_engine import AIDungeonMaster
 from ai_dm.errors import ConfigurationError, ContextBudgetError
 from ai_dm.memory import history_record
-from ai_dm.models import CampaignStartRequest, TurnHistoryEntry
+from ai_dm.models import CampaignStartRequest, CharacterState, CheckResult, TurnHistoryEntry, TurnRequest
 from ai_dm.prompts import PromptTemplates
 from ai_dm.tests.test_dm_engine import CAMPAIGN, TURN, completion, fake_client, turn_request
 
@@ -102,6 +102,51 @@ class PromptTests(unittest.TestCase):
                         self.invoke(client, campaign=name == "campaign.txt")
                 self.assertEqual(caught.exception.repair, name == "repair.txt")
                 self.assertEqual(client.chat.completions.create.call_count, int(name == "repair.txt"))
+
+    def test_check_templates_are_included_in_the_context_budget(self):
+        original_read = prompts._read_template
+        data = turn_request().model_dump()
+        data["game_state"]["active_characters"][0]["stats"] = {"Ловкость": 3}
+        offered = TurnRequest(**{**data, "acting_character": "Элиас"})
+        rolled = offered.model_copy(update={"check_result": CheckResult(
+            stat="Ловкость", difficulty=15, roll=12, modifier=3, total=15, success=True,
+        )})
+        for name, request in (("check_offer.txt", offered), ("check_result.txt", rolled)):
+            with self.subTest(name=name):
+                def read(filename):
+                    value = original_read(filename)
+                    return "Дополнительная инструкция. " * 1000 + value if filename == name else value
+
+                client = fake_client()
+                with patch.object(prompts, "_read_template", side_effect=read), \
+                        patch.dict(os.environ, {"AI_DM_MAX_CONTEXT_CHARS": "10000"}):
+                    with self.assertRaises(ContextBudgetError):
+                        AIDungeonMaster(client).process_turn(request)
+                client.chat.completions.create.assert_not_called()
+
+    def test_check_data_is_substituted_once_and_preserved_literally(self):
+        marker = 'Сила {schema} ${hidden_plot} $5 "руны"'
+        data = turn_request().model_dump()
+        data["game_state"]["active_characters"][0]["stats"] = {marker: 2}
+        request = TurnRequest(**{**data, "acting_character": "Элиас"})
+        client = fake_client(completion(json.dumps(TURN)))
+        AIDungeonMaster(client).process_turn(request)
+        text = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        self.assertIn(f"Характеристики действующего персонажа: {json.dumps({marker: 2}, ensure_ascii=False)}.", text)
+
+    def test_campaign_prompt_asks_for_a_structured_plot_and_a_spoiler_free_intro(self):
+        hero = CharacterState(name="Элиас", hp=12, max_hp=12, inventory=["Кинжал"], stats={"Ловкость": 3})
+        client = fake_client(completion(json.dumps(CAMPAIGN)))
+        AIDungeonMaster(client).generate_campaign_start(
+            CampaignStartRequest(setting_theme="Кузница на окраине", characters=[hero], monster_encounter="skeleton")
+        )
+        text = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        for expected in ("Кузница на окраине", '"Skeleton"', '"stats": {"Ловкость": 3}',
+                         "### СКРЫТЫЙ СЮЖЕТ (hidden_plot):", "две-три конкретные зацепки",
+                         "какую роль играет монстр", "### ОТКРЫТАЯ ЧАСТЬ:",
+                         "не называй виновника, его цель и развязку"):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, text)
 
     def test_templates_are_stable_during_repair_and_reloaded_for_next_operation(self):
         original_read = prompts._read_template
