@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from ai_dm.dm_engine import AIDungeonMaster
 from ai_dm.errors import AIDMError, ProviderError
+from ai_dm.models import CampaignStartRequest
 from ai_dm.prompts import PromptTemplates
 from ai_dm.scene_scenarios import scene_scenarios
 
@@ -40,7 +41,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         templates = json.dumps(asdict(PromptTemplates.load()), ensure_ascii=False, sort_keys=True)
         report["prompt_sha256"] = hashlib.sha256(templates.encode("utf-8")).hexdigest()
-        response = AIDungeonMaster().process_turn(scenario.request)
+        dm = AIDungeonMaster()
+        if isinstance(scenario.request, CampaignStartRequest):
+            # Unlike turn cases, this one also asks the monster reference API.
+            response = dm.generate_campaign_start(scenario.request)
+        else:
+            response = dm.process_turn(scenario.request)
         report["response"] = response.model_dump()
         report["status"] = "generated"
     except AIDMError as exc:
