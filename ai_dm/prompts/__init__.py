@@ -76,11 +76,12 @@ class PromptTemplates:
             )
         actor = next((character for character in request.game_state.active_characters
                       if character.name == request.acting_character), None)
-        if actor is None or not actor.stats:
+        if actor is None or not (actor.stats or actor.abilities):
             return _CHECK_UNAVAILABLE
+        stats = actor.stats or actor.abilities
         return self._render(
             "check_offer",
-            stats=json.dumps(actor.stats, ensure_ascii=False),
+            stats=json.dumps(stats, ensure_ascii=False),
             min_difficulty=str(MIN_DIFFICULTY),
             max_difficulty=str(MAX_DIFFICULTY),
         )

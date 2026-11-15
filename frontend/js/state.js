@@ -4,7 +4,7 @@ export const LEGACY_STORAGE_KEY = "ai-dungeon-master.public-cache";
 export function emptyPublicState(sessionId = "", sessionName = "", connection = "unverified") {
   return {
     connection, session_id: String(sessionId), session_name: String(sessionName),
-    revision: 0, turn_number: 0, location: "", characters: [], log: [],
+    revision: 0, turn_number: 0, location: "", characters: [], log: [], pending_turn: null,
   };
 }
 
@@ -42,6 +42,9 @@ export function normalizePublicState(value, fallbackId = "") {
     turn_number: Number.isInteger(turnNumber) && turnNumber >= 0 ? turnNumber : 0,
     location: String(source.location || ""),
     characters: Array.isArray(source.characters) ? source.characters.map(copyCharacter) : [],
+    pending_turn: source.pending_turn && typeof source.pending_turn === "object"
+      ? { ...source.pending_turn, resolved_checks: [...(source.pending_turn.resolved_checks || [])] }
+      : null,
     log: Array.isArray(source.log)
       ? source.log.filter((entry) => entry && (entry.kind === "player" || entry.kind === "master")).map((entry) => ({
           kind: entry.kind, character_id: String(entry.character_id || ""), text: String(entry.text || ""),

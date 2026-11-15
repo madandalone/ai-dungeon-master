@@ -1,5 +1,11 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
+
+
+AbilityName = Literal[
+    "strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma",
+]
+DifficultyClass = Literal[5, 10, 15, 20, 25, 30]
 
 # --- Входной контекст от Game Engine и Rules Service ---
 class CharacterState(BaseModel):
@@ -7,7 +13,8 @@ class CharacterState(BaseModel):
     hp: int
     max_hp: int
     inventory: List[str]
-    # Характеристики из Engine: название -> модификатор проверки (бросок d20 + значение).
+    abilities: dict[str, int] = Field(default_factory=dict)
+    # Совместимость с первым контрактом AI DM, где передавались готовые модификаторы.
     stats: Dict[str, int] = Field(default_factory=dict)
 
 class GameState(BaseModel):
@@ -25,14 +32,23 @@ class TurnHistoryEntry(BaseModel):
 
 
 class CheckResult(BaseModel):
-    """Итог проверки, брошенной Game Engine; DM получает его на втором этапе хода."""
+    """Неизменяемый итог проверки, выполненной Game Engine."""
 
-    stat: str
-    difficulty: int
-    roll: int
+    ability: Optional[AbilityName] = None
+    stat: Optional[str] = None
+    difficulty: int = Field(ge=5, le=30)
+    roll: int = Field(ge=1, le=20)
     modifier: int
     total: int
     success: bool
+
+    @model_validator(mode="after")
+    def _ability_or_legacy_stat(self) -> "CheckResult":
+        if self.ability is None and not self.stat:
+            raise ValueError("ability or stat is required")
+        if self.stat is None and self.ability is not None:
+            self.stat = self.ability
+        return self
 
 
 class TurnRequest(BaseModel):
@@ -90,6 +106,53 @@ class TurnResponse(BaseModel):
     dm_thoughts: str = Field(
         description="Скрытые заметки мастера: как изменился скрытый сюжет или отношение окружения"
     )
+
+
+class SkillCheckProposal(BaseModel):
+    ability: AbilityName
+    difficulty: DifficultyClass
+    reason: str = Field(min_length=1, max_length=240)
+
+
+class TurnPlan(BaseModel):
+    status: Literal["resolved", "check"]
+    response: Optional[TurnResponse] = None
+    check: Optional[SkillCheckProposal] = None
+
+    @model_validator(mode="after")
+    def _matching_payload(self) -> "TurnPlan":
+        if self.status == "resolved":
+            if self.response is None:
+                raise ValueError("resolved plan requires response")
+            self.check = None
+        else:
+            if self.check is None:
+                raise ValueError("check plan requires check")
+            # A small local model can echo a speculative response alongside the check.
+            # It is deliberately discarded before it can reach Engine.
+            self.response = None
+        return self
+
+
+class CheckResolution(BaseModel):
+    status: Literal["resolved", "check"]
+    outcome: Literal["success", "failure"]
+    response: Optional[TurnResponse] = None
+    check: Optional[SkillCheckProposal] = None
+
+    @model_validator(mode="after")
+    def _matching_payload(self) -> "CheckResolution":
+        if self.status == "resolved":
+            if self.response is None:
+                raise ValueError("resolved check requires response")
+            self.check = None
+        else:
+            if self.check is None:
+                raise ValueError("continued check requires check")
+            self.response = None
+        if self.outcome == "failure" and self.status != "resolved":
+            raise ValueError("a failed check must resolve the turn")
+        return self
 
 
 # --- Модели для функции старта кампании ---

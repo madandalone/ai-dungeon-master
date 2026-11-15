@@ -86,7 +86,9 @@ test("turn receipts prefer typed server events", () => {
     {
       type: "skill_check_resolved",
       character_id: "hero",
-      stat: "might",
+      ability: "strength",
+      roll: 13,
+      modifier: 2,
       total: 15,
       difficulty: 12,
       success: true,
@@ -99,7 +101,9 @@ test("turn receipts prefer typed server events", () => {
     {
       type: "skill_check_resolved",
       characterId: "hero",
-      stat: "might",
+      ability: "strength",
+      roll: 13,
+      modifier: 2,
       total: 15,
       difficulty: 12,
       success: true,

@@ -122,7 +122,7 @@ def _public_event(event: GameEvent) -> dict | None:
         return {
             **_event_base(event, "skill_check_resolved"),
             "character_id": event.character_id,
-            "stat": event.stat,
+            "ability": event.ability,
             "roll": event.roll,
             "modifier": event.modifier,
             "total": event.total,

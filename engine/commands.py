@@ -45,7 +45,7 @@ class SetWorldFlag:
 @dataclass(frozen=True)
 class SkillCheck:
     character_id: str
-    stat: str
+    ability: str
     difficulty: int
 
 

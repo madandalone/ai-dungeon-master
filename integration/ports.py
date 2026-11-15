@@ -1,6 +1,14 @@
 from typing import Protocol
 
-from ai_dm.models import CampaignStartRequest, CampaignStartResponse, TurnRequest, TurnResponse
+from ai_dm.models import (
+    CampaignStartRequest,
+    CampaignStartResponse,
+    CheckResolution,
+    CheckResult,
+    TurnPlan,
+    TurnRequest,
+    TurnResponse,
+)
 
 
 class RulesProvider(Protocol):
@@ -18,6 +26,14 @@ class DungeonMaster(Protocol):
 
         Raise ai_dm.errors.AIDMError (or a subclass) for expected failures; other exceptions propagate as bugs.
         """
+
+    def plan_turn(self, request: TurnRequest) -> TurnPlan:
+        """Resolve an obvious action or request an Engine-owned ability check."""
+
+    def resolve_check(
+        self, request: TurnRequest, checks: list[CheckResult], *, allow_next: bool,
+    ) -> CheckResolution:
+        """Continue a checked turn using immutable Engine results."""
 
 
 class CampaignMaster(Protocol):

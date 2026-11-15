@@ -9,7 +9,9 @@ from ai_dm.models import (
     CampaignStartRequest,
     CampaignStartResponse,
     CharacterState,
+    CheckResolution,
     TurnRequest,
+    TurnPlan,
     TurnResponse,
 )
 
@@ -17,6 +19,10 @@ from ai_dm.models import (
 _RUSSIAN = frozenset("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя")
 _LOOKALIKES = dict(zip("ABCEHKMOPTXYaceopxy", "АВСЕНКМОРТХУасеорху"))
 _WORDS = re.compile(r"\w+")
+_EXPLICIT_UNCERTAINTY = (
+    "пытаюсь", "пытается", "попытка", "рискуя", "риск", "опасн", "сложн",
+    "try", "attempt", "risk", "dangerous", "difficult",
+)
 
 # D&D 5e difficulty classes: 5 is very easy, 30 is nearly impossible.
 MIN_DIFFICULTY = 5
@@ -147,17 +153,18 @@ def _check_errors(response: TurnResponse, request: TurnRequest) -> list[str]:
         return ["requires_check: true требует объект check с полями stat и difficulty."]
     actor = next((character for character in request.game_state.active_characters
                   if character.name == request.acting_character), None)
-    if actor is None or not actor.stats:
+    available = (actor.stats or actor.abilities) if actor is not None else {}
+    if not available:
         return [
             "Проверка недоступна: действующий персонаж не указан или у него нет характеристик. "
             "Верни requires_check: false и check: null; не придумывай бросок и его результат."
         ]
     errors = []
-    if response.check.stat not in actor.stats:
+    if response.check.stat not in available:
         errors.append(
             f"check.stat {json.dumps(response.check.stat, ensure_ascii=False)} нет у персонажа "
             f"{json.dumps(actor.name, ensure_ascii=False)}. Допустимые характеристики: "
-            f"{json.dumps(sorted(actor.stats), ensure_ascii=False)}. Скопируй название точно."
+            f"{json.dumps(sorted(available), ensure_ascii=False)}. Скопируй название точно."
         )
     if not MIN_DIFFICULTY <= response.check.difficulty <= MAX_DIFFICULTY:
         errors.append(
@@ -176,8 +183,9 @@ def validate_campaign(
     response: CampaignStartResponse, *, request: CampaignStartRequest,
 ) -> CampaignStartResponse:
     """Return a normalized, validated copy without modifying caller-owned models."""
-    references = [name for character in request.characters
-                  for name in (character.name, *character.inventory, *character.stats)]
+    references = [name for character in request.characters for name in (
+        character.name, *character.inventory, *character.stats, *character.abilities,
+    )]
     response = response.model_copy(update={
         field: _normalize_text(value, () if field in ("campaign_title", "starting_location") else references)
         for field, value in response.model_dump().items()
@@ -202,7 +210,10 @@ def validate_turn(response: TurnResponse, *, request: TurnRequest) -> TurnRespon
     names_json = json.dumps(character_names, ensure_ascii=False)
     inventory = {item for character in request.game_state.active_characters
                  for item in character.inventory}
-    stats = {stat for character in request.game_state.active_characters for stat in character.stats}
+    stats = {
+        stat for character in request.game_state.active_characters
+        for stat in (*character.stats, *character.abilities)
+    }
     references = [*character_names, *inventory, *stats, request.game_state.location]
     response = response.model_copy(deep=True)
     response.narrative = _normalize_text(response.narrative, references)
@@ -255,4 +266,47 @@ def validate_turn(response: TurnResponse, *, request: TurnRequest) -> TurnRespon
         )
     if errors:
         raise ValueError(" ".join(errors))
+    return response
+
+
+def _check_error(ability: str, request: TurnRequest) -> str | None:
+    actor = next(
+        (character for character in request.game_state.active_characters
+         if character.name == request.acting_character),
+        None,
+    )
+    if actor is None or ability not in (actor.abilities or actor.stats):
+        return f"Характеристика {ability!r} отсутствует у действующего персонажа."
+    return None
+
+
+def validate_turn_plan(response: TurnPlan, *, request: TurnRequest) -> TurnPlan:
+    if response.status == "resolved":
+        action = request.player_action.casefold()
+        if any(marker in action for marker in _EXPLICIT_UNCERTAINTY):
+            raise ValueError(
+                "Игрок явно описал попытку, риск или опасность. Верни status=check; "
+                "не определяй исход и изменения состояния до броска Engine."
+            )
+        response.response = validate_turn(response.response, request=request)
+        return response
+    error = _check_error(response.check.ability, request)
+    if error:
+        raise ValueError(error)
+    return response
+
+
+def validate_check_resolution(
+    response: CheckResolution, *, request: TurnRequest, expected_outcome: str,
+) -> CheckResolution:
+    if response.outcome != expected_outcome:
+        raise ValueError(
+            f"Исход должен совпадать с результатом Engine: {expected_outcome}."
+        )
+    if response.status == "resolved":
+        response.response = validate_turn(response.response, request=request)
+        return response
+    error = _check_error(response.check.ability, request)
+    if error:
+        raise ValueError(error)
     return response

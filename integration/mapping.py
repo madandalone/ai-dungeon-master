@@ -20,6 +20,7 @@ def to_dm_state(state: GameState, room_context: str = "") -> dm.GameState:
                 hp=c.hp,
                 max_hp=c.max_hp,
                 inventory=[i.name for i in c.inventory for _ in range(i.quantity)],
+                abilities=dict(c.stats),
             )
             for c in state.characters
         ],

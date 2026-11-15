@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#000000">
     <title>AI Dungeon Master</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="styles.css?v=20261109-1">
+    <link rel="stylesheet" href="styles.css?v=20261115-1">
   </head>
   <body>
     <div class="app-shell" id="app-shell">
@@ -72,6 +72,18 @@
                 <div class="receipt-heading"><div><p class="panel-eyebrow" data-i18n="game.receiptEyebrow">ИТОГ ХОДА</p><h3 id="turn-receipt-title" data-i18n="game.receiptTitle">Что изменилось</h3></div><span class="receipt-turn" id="receipt-turn"></span></div>
                 <ul class="receipt-list" id="receipt-list" aria-live="polite"></ul>
               </section>
+              <section class="skill-check-card" id="skill-check-card" aria-labelledby="skill-check-title" hidden>
+                <div>
+                  <p class="panel-eyebrow" data-i18n="check.eyebrow">ПРОВЕРКА НАВЫКА</p>
+                  <h3 id="skill-check-title"></h3>
+                  <p id="skill-check-reason"></p>
+                </div>
+                <div class="check-math"><strong id="skill-check-formula"></strong><span id="skill-check-chance"></span></div>
+                <div class="check-actions">
+                  <button class="primary-button" id="roll-d20" type="button" data-i18n="check.roll">Бросить d20</button>
+                  <button class="text-button" id="cancel-check" type="button" data-i18n="check.cancel">Отменить действие</button>
+                </div>
+              </section>
               <form id="action-form" class="action-console">
                 <label><span data-i18n="game.actor">Кто действует</span><select id="acting-character" name="acting-character" required></select></label>
                 <label><span data-i18n="game.action">Действие героя</span><textarea id="action-text" name="action-text" rows="3" maxlength="500" required data-i18n-placeholder="game.actionPlaceholder" placeholder="Что делает ваш герой?"></textarea></label>
@@ -95,7 +107,14 @@
                 <label><span data-i18n="characters.name">Имя</span><input id="character-name" name="character-name" type="text" maxlength="60" required data-i18n-placeholder="characters.namePlaceholder" placeholder="Например, Элиас"></label>
                 <label><span data-i18n="characters.concept">Кто этот герой</span><input id="character-concept" name="character-concept" type="text" maxlength="120" data-i18n-placeholder="characters.conceptPlaceholder" placeholder="Плут, лесной следопыт, боевой маг…"></label>
                 <label><span data-i18n="characters.hp">Максимум здоровья</span><input id="character-hp" name="character-hp" type="number" min="1" max="999" value="10" required></label>
-                <fieldset><legend data-i18n="characters.stats">Характеристики</legend><div id="stat-rows" class="stat-rows"></div><button id="add-stat" class="text-button" type="button" data-i18n="characters.addStat">+ Добавить характеристику</button></fieldset>
+                <fieldset><legend data-i18n="characters.stats">Характеристики</legend><div id="stat-rows" class="ability-grid">
+                  <label><span data-i18n="ability.strength">Сила</span><input data-ability="strength" type="number" min="1" max="20" value="10" required></label>
+                  <label><span data-i18n="ability.dexterity">Ловкость</span><input data-ability="dexterity" type="number" min="1" max="20" value="10" required></label>
+                  <label><span data-i18n="ability.constitution">Телосложение</span><input data-ability="constitution" type="number" min="1" max="20" value="10" required></label>
+                  <label><span data-i18n="ability.intelligence">Интеллект</span><input data-ability="intelligence" type="number" min="1" max="20" value="10" required></label>
+                  <label><span data-i18n="ability.wisdom">Мудрость</span><input data-ability="wisdom" type="number" min="1" max="20" value="10" required></label>
+                  <label><span data-i18n="ability.charisma">Харизма</span><input data-ability="charisma" type="number" min="1" max="20" value="10" required></label>
+                </div></fieldset>
                 <label><span data-i18n="characters.item">Стартовый предмет</span><input id="starting-item" name="starting-item" type="text" maxlength="60" data-i18n-placeholder="characters.itemPlaceholder" placeholder="Например, кинжал"></label>
                 <p class="form-message" id="character-message" role="status"></p><button class="primary-button" type="submit" data-i18n="characters.create">Добавить героя</button>
               </form>
@@ -134,6 +153,13 @@
           </div>
         </section>
       </main>
+    </div>
+    <div class="dice-overlay" id="dice-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="dice-title">
+      <div class="dice-stage">
+        <p class="panel-eyebrow" id="dice-title" data-i18n="check.rolling">КУБИК ВРАЩАЕТСЯ</p>
+        <div class="d20" id="d20" aria-live="polite"><span id="d20-value">20</span></div>
+        <p class="dice-formula" id="dice-formula"></p>
+      </div>
     </div>
     <script type="module" src="js/app.js"></script>
   </body>

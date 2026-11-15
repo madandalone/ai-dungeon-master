@@ -49,6 +49,24 @@ function isIssueList(value) {
   return Array.isArray(value) && value.every((issue) => isObject(issue) && typeof issue.code === "string");
 }
 
+function isPendingTurn(value) {
+  return isObject(value)
+    && value.status === "awaiting_roll"
+    && typeof value.action_id === "string"
+    && typeof value.character_id === "string"
+    && typeof value.text === "string"
+    && Number.isInteger(value.sequence) && value.sequence >= 1 && value.sequence <= 3
+    && Number.isInteger(value.maximum) && value.maximum === 3
+    && typeof value.ability === "string"
+    && Number.isInteger(value.score) && value.score >= 1 && value.score <= 20
+    && Number.isInteger(value.modifier)
+    && [5, 10, 15, 20, 25, 30].includes(value.difficulty)
+    && Number.isInteger(value.chance) && value.chance >= 0 && value.chance <= 100
+    && typeof value.reason === "string"
+    && Array.isArray(value.resolved_checks)
+    && typeof value.can_cancel === "boolean";
+}
+
 function eventBase(event) {
   if (!isObject(event) || typeof event.action_id !== "string" || !isCounter(event.sequence)) return null;
   return { type: event.type, action_id: event.action_id, sequence: event.sequence };
@@ -105,7 +123,7 @@ function normalizePublicEvent(event) {
   }
   if (event.type === "skill_check_resolved"
     && typeof event.character_id === "string"
-    && typeof event.stat === "string"
+    && typeof event.ability === "string"
     && Number.isInteger(event.roll)
     && Number.isInteger(event.modifier)
     && Number.isInteger(event.total)
@@ -114,7 +132,7 @@ function normalizePublicEvent(event) {
     return {
       ...base,
       character_id: event.character_id,
-      stat: event.stat,
+      ability: event.ability,
       roll: event.roll,
       modifier: event.modifier,
       total: event.total,
@@ -156,7 +174,8 @@ export function isPublicState(value) {
     && Array.isArray(value.characters)
     && Array.isArray(value.log)
     && isCounter(value.revision)
-    && isCounter(value.turn_number);
+    && isCounter(value.turn_number)
+    && (value.pending_turn === undefined || value.pending_turn === null || isPendingTurn(value.pending_turn));
 }
 
 export async function fetchHealth(fetcher = globalThis.fetch) {
@@ -214,6 +233,12 @@ export async function submitTurn(sessionId, turn, fetcher = globalThis.fetch) {
       text: turn.text,
     }),
   }, fetcher);
+  if (body?.status === "awaiting_roll") {
+    if (!isPendingTurn(body.pending_turn) || !isPublicState(body.state)) {
+      throw new ApiError("invalid_response");
+    }
+    return body;
+  }
   const events = normalizePublicEvents(body?.events);
   const valid = isObject(body)
     && typeof body.accepted === "boolean"
@@ -225,5 +250,36 @@ export async function submitTurn(sessionId, turn, fetcher = globalThis.fetch) {
     && (body.warnings === undefined || isIssueList(body.warnings))
     && events !== null;
   if (!valid) throw new ApiError("invalid_response");
+  return { ...body, status: body.status || "resolved", warnings: body.warnings || [], events };
+}
+
+export async function rollTurn(sessionId, actionId, fetcher = globalThis.fetch) {
+  const body = await requestJson(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(actionId)}/roll`,
+    { method: "POST" },
+    fetcher,
+  );
+  if (body?.status === "awaiting_roll") {
+    if (!isPendingTurn(body.pending_turn) || !isPublicState(body.state)) {
+      throw new ApiError("invalid_response");
+    }
+    return body;
+  }
+  const events = normalizePublicEvents(body?.events);
+  if (!isObject(body) || body.status !== "resolved" || typeof body.accepted !== "boolean"
+    || !isPublicState(body.state) || events === null || !isIssueList(body.errors)
+    || (body.warnings !== undefined && !isIssueList(body.warnings))) {
+    throw new ApiError("invalid_response");
+  }
   return { ...body, warnings: body.warnings || [], events };
+}
+
+export async function cancelTurn(sessionId, actionId, fetcher = globalThis.fetch) {
+  const body = await requestJson(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(actionId)}/cancel`,
+    { method: "POST" },
+    fetcher,
+  );
+  if (body?.status !== "cancelled" || body.action_id !== actionId) throw new ApiError("invalid_response");
+  return body;
 }

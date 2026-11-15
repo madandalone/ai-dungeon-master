@@ -24,6 +24,8 @@ from engine.events import (
     WorldFlagChanged,
 )
 from engine.models import (
+    ABILITIES,
+    ALLOWED_DIFFICULTIES,
     Character,
     EngineError,
     EngineResult,
@@ -33,11 +35,19 @@ from engine.models import (
 )
 
 
+def ability_modifier(score: int) -> int:
+    """Return the D&D ability modifier for a score in the supported range."""
+    if not _is_int(score) or not 1 <= score <= 20:
+        raise ValueError("Ability score must be an integer from 1 to 20")
+    return (score - 10) // 2
+
+
 def apply_action(
     state: GameState,
     action: PlayerAction,
     commands: tuple[object, ...] | list[object],
     dice: Dice,
+    resolved_checks: tuple[SkillCheckResolved, ...] | list[SkillCheckResolved] = (),
 ) -> EngineResult:
     """Validate one player action and apply its commands atomically.
 
@@ -49,16 +59,22 @@ def apply_action(
     if action_errors:
         return _reject(state, action, action_errors)
 
+    check_error = _resolved_checks_error(state, action, resolved_checks)
+    if check_error is not None:
+        return _reject(state, action, (check_error,))
+
     preview = state
     for index, command in enumerate(commands):
-        preview, _event, error = _step(preview, command, index, action.action_id, dice, commit=False)
+        sequence = len(resolved_checks) + index
+        preview, _event, error = _step(preview, command, sequence, action.action_id, dice, commit=False)
         if error is not None:
             return _reject(state, action, (error,))
 
     current = state
     events = []
     for index, command in enumerate(commands):
-        current, event, error = _step(current, command, index, action.action_id, dice, commit=True)
+        sequence = len(resolved_checks) + index
+        current, event, error = _step(current, command, sequence, action.action_id, dice, commit=True)
         if error is not None or event is None:
             fallback = error or EngineError("UNKNOWN_COMMAND", "Command could not be applied.", index)
             return _reject(state, action, (fallback,))
@@ -69,7 +85,26 @@ def apply_action(
         revision=current.revision + 1,
         turn_number=current.turn_number + 1,
     )
-    return EngineResult(True, accepted_state, tuple(events), ())
+    return EngineResult(True, accepted_state, (*resolved_checks, *events), ())
+
+
+def resolve_skill_check(
+    state: GameState,
+    action: PlayerAction,
+    command: SkillCheck,
+    dice: Dice,
+    sequence: int = 0,
+) -> SkillCheckResolved:
+    """Resolve one check without advancing the turn or mutating game state."""
+    errors = _action_errors(state, action)
+    if errors:
+        raise ValueError(errors[0].message)
+    _state, event, error = _skill_check(
+        state, command, sequence, action.action_id, dice, commit=True,
+    )
+    if error is not None or not isinstance(event, SkillCheckResolved):
+        raise ValueError((error.message if error else "Skill check could not be resolved"))
+    return event
 
 
 def add_character(
@@ -248,21 +283,24 @@ def _skill_check(state, command, index, action_id, dice, commit):
     character = _find_character(state, command.character_id)
     if character is None:
         return state, None, EngineError("INVALID_TARGET", "Character was not found.", index)
-    stat = command.stat.strip()
-    if stat == "" or stat not in character.stats or not _is_int(character.stats[stat]):
+    ability = command.ability.strip()
+    if ability not in ABILITIES or ability not in character.stats or not _is_int(character.stats[ability]):
         return state, None, EngineError("INVALID_STAT", "Stat is not on this character.", index)
-    if not _is_int(command.difficulty):
-        return state, None, EngineError("INVALID_TARGET", "Difficulty must be an integer.", index)
+    score = character.stats[ability]
+    if not 1 <= score <= 20:
+        return state, None, EngineError("INVALID_STAT", "Ability score must be from 1 to 20.", index)
+    if command.difficulty not in ALLOWED_DIFFICULTIES:
+        return state, None, EngineError("INVALID_TARGET", "Difficulty is not an allowed D&D DC.", index)
     if not commit:
         return state, None, None
     roll = dice.roll(20)
-    modifier = character.stats[stat]
+    modifier = ability_modifier(score)
     total = roll + modifier
     event = SkillCheckResolved(
         action_id,
         index,
         character.id,
-        stat,
+        ability,
         roll,
         modifier,
         total,
@@ -270,6 +308,27 @@ def _skill_check(state, command, index, action_id, dice, commit):
         total >= command.difficulty,
     )
     return state, event, None
+
+
+def _resolved_checks_error(state, action, checks):
+    for index, event in enumerate(checks):
+        if not isinstance(event, SkillCheckResolved):
+            return EngineError("INVALID_TARGET", "Resolved check event is invalid.", index)
+        character = _find_character(state, event.character_id)
+        if character is None or event.action_id != action.action_id or event.sequence != index:
+            return EngineError("INVALID_TARGET", "Resolved check does not belong to this action.", index)
+        score = character.stats.get(event.ability)
+        if not _is_int(score) or not 1 <= score <= 20 or event.difficulty not in ALLOWED_DIFFICULTIES:
+            return EngineError("INVALID_STAT", "Resolved check ability or DC is invalid.", index)
+        modifier = ability_modifier(score)
+        if (
+            not 1 <= event.roll <= 20
+            or event.modifier != modifier
+            or event.total != event.roll + modifier
+            or event.success != (event.total >= event.difficulty)
+        ):
+            return EngineError("INVALID_TARGET", "Resolved check totals are inconsistent.", index)
+    return None
 
 
 def _find_character(state: GameState, character_id: str) -> Character | None:
@@ -286,10 +345,10 @@ def _character_error(character: Character) -> EngineError | None:
         return EngineError("INVALID_CHARACTER", "Character health must be an integer.")
     if character.max_hp <= 0 or character.hp < 0 or character.hp > character.max_hp:
         return EngineError("INVALID_CHARACTER", "Character health is outside the allowed range.")
-    if len(character.stats) > 10:
-        return EngineError("INVALID_CHARACTER", "Character has too many stats.")
-    if any(name.strip() == "" or not _is_int(value) for name, value in character.stats.items()):
-        return EngineError("INVALID_CHARACTER", "Character stats are invalid.")
+    if set(character.stats) != set(ABILITIES):
+        return EngineError("INVALID_CHARACTER", "Character must have all six D&D abilities.")
+    if any(not _is_int(value) or not 1 <= value <= 20 for value in character.stats.values()):
+        return EngineError("INVALID_CHARACTER", "Ability scores must be integers from 1 to 20.")
     if any(
         item.item_id.strip() == "" or item.name.strip() == "" or not _is_int(item.quantity) or item.quantity <= 0
         for item in character.inventory

@@ -41,3 +41,4 @@ yarn-error.log*
 # Rules Service data and index
 data/
 .rules_index/
+.opencode

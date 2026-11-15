@@ -65,7 +65,7 @@ class PublicProjectionTests(unittest.TestCase):
             ItemRemoved("a1", 2, "hero", "torch", 1, 0),
             LocationChanged("a1", 3, "start", "crypt"),
             StatChanged("a1", 4, "hero", "might", 2, 3, 1),
-            SkillCheckResolved("a1", 5, "hero", "might", 12, 3, 15, 14, True),
+            SkillCheckResolved("a1", 5, "hero", "strength", 12, 3, 15, 14, True),
             WorldFlagChanged("a1", 6, "secret_door", None, True),
             ActionRejected("a2", 0, "STALE_REVISION"),
         )
