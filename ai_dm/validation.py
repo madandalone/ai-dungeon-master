@@ -24,6 +24,12 @@ _EXPLICIT_UNCERTAINTY = (
     "try", "attempt", "risk", "dangerous", "difficult",
 )
 
+# D&D 5e difficulty classes: 5 is very easy, 30 is nearly impossible.
+MIN_DIFFICULTY = 5
+MAX_DIFFICULTY = 30
+# A run of this many consecutive words copied from the hidden plot counts as quoting it.
+QUOTE_WORDS = 6
+
 
 def _reference_pattern(references: Sequence[str]) -> re.Pattern[str] | None:
     names = sorted({name for name in references if name}, key=lambda name: (-len(name), name))
@@ -105,12 +111,81 @@ def _inventory_errors(response: TurnResponse, characters: Sequence[CharacterStat
     return errors
 
 
+def _word_runs(texts: Sequence[str]) -> set[tuple[str, ...]]:
+    runs = set()
+    for text in texts:
+        words = _WORDS.findall(text.casefold().replace("ё", "е"))
+        runs.update(tuple(words[start:start + QUOTE_WORDS])
+                    for start in range(len(words) - QUOTE_WORDS + 1))
+    return runs
+
+
+def _quote_errors(public: dict[str, str], secret: str, known: Sequence[str]) -> list[str]:
+    """Catch verbatim quoting of the hidden plot in player-facing text.
+
+    Wording the players have already seen is not a leak. A paraphrased secret is
+    not detected: that still needs the prompt and human review.
+    """
+    private = _word_runs([secret]) - _word_runs(known)
+    quoted = [field for field, value in public.items() if private & _word_runs([value])]
+    if not quoted:
+        return []
+    return [
+        "Поля " + ", ".join(quoted) + " дословно повторяют скрытый сюжет. Не цитируй его: "
+        "опиши своими словами только то, что персонажи узнали или увидели сами."
+    ]
+
+
+def _check_errors(response: TurnResponse, request: TurnRequest) -> list[str]:
+    """The model only proposes a check; the stat and difficulty must be ones Engine can roll."""
+    if request.check_result is not None:
+        if response.requires_check or response.check is not None:
+            return [
+                "Проверка в этом ходе уже проведена. Верни requires_check: false и check: null "
+                "и опиши исход по переданному результату броска."
+            ]
+        return []
+    if not response.requires_check:
+        if response.check is not None:
+            return ["check задан при requires_check: false. Верни check: null или requires_check: true."]
+        return []
+    if response.check is None:
+        return ["requires_check: true требует объект check с полями stat и difficulty."]
+    actor = next((character for character in request.game_state.active_characters
+                  if character.name == request.acting_character), None)
+    available = (actor.stats or actor.abilities) if actor is not None else {}
+    if not available:
+        return [
+            "Проверка недоступна: действующий персонаж не указан или у него нет характеристик. "
+            "Верни requires_check: false и check: null; не придумывай бросок и его результат."
+        ]
+    errors = []
+    if response.check.stat not in available:
+        errors.append(
+            f"check.stat {json.dumps(response.check.stat, ensure_ascii=False)} нет у персонажа "
+            f"{json.dumps(actor.name, ensure_ascii=False)}. Допустимые характеристики: "
+            f"{json.dumps(sorted(available), ensure_ascii=False)}. Скопируй название точно."
+        )
+    if not MIN_DIFFICULTY <= response.check.difficulty <= MAX_DIFFICULTY:
+        errors.append(
+            f"check.difficulty должно быть целым числом от {MIN_DIFFICULTY} до {MAX_DIFFICULTY}, "
+            f"получено {response.check.difficulty}."
+        )
+    if response.state_updates or response.new_location is not None:
+        errors.append(
+            "При requires_check: true не предлагай изменения: верни state_updates: [] и "
+            "new_location: null. Последствия ты опишешь после броска."
+        )
+    return errors
+
+
 def validate_campaign(
     response: CampaignStartResponse, *, request: CampaignStartRequest,
 ) -> CampaignStartResponse:
     """Return a normalized, validated copy without modifying caller-owned models."""
-    references = [name for character in request.characters
-                  for name in (character.name, *character.inventory)]
+    references = [name for character in request.characters for name in (
+        character.name, *character.inventory, *character.stats, *character.abilities,
+    )]
     response = response.model_copy(update={
         field: _normalize_text(value, () if field in ("campaign_title", "starting_location") else references)
         for field, value in response.model_dump().items()
@@ -118,6 +193,11 @@ def validate_campaign(
     fields = response.model_dump()
     names = {field: fields.pop(field) for field in ("campaign_title", "starting_location")}
     errors = _language_errors(names) + _language_errors(fields, references)
+    # room_context is the observable scene, so wording it shares with the plot is not secret.
+    errors.extend(_quote_errors(
+        {"intro_narrative": response.intro_narrative}, response.hidden_plot,
+        [response.room_context, request.setting_theme],
+    ))
     if errors:
         raise ValueError(" ".join(errors))
     return response
@@ -130,7 +210,11 @@ def validate_turn(response: TurnResponse, *, request: TurnRequest) -> TurnRespon
     names_json = json.dumps(character_names, ensure_ascii=False)
     inventory = {item for character in request.game_state.active_characters
                  for item in character.inventory}
-    references = [*character_names, *inventory, request.game_state.location]
+    stats = {
+        stat for character in request.game_state.active_characters
+        for stat in (*character.stats, *character.abilities)
+    }
+    references = [*character_names, *inventory, *stats, request.game_state.location]
     response = response.model_copy(deep=True)
     response.narrative = _normalize_text(response.narrative, references)
     response.dm_thoughts = _normalize_text(response.dm_thoughts, references)
@@ -138,10 +222,19 @@ def validate_turn(response: TurnResponse, *, request: TurnRequest) -> TurnRespon
         response.new_location = _normalize_text(response.new_location)
     for update in response.state_updates:
         update.items_added = [item if item in inventory else _normalize_text(item) for item in update.items_added]
-    prose = {"narrative": response.narrative}
+    prose = {}
+    # While a check is pending the outcome is unknown, so there may be nothing to narrate yet.
+    if response.narrative.strip() or not response.requires_check:
+        prose["narrative"] = response.narrative
     if response.dm_thoughts.strip():
         prose["dm_thoughts"] = response.dm_thoughts
     errors = _language_errors(prose, references)
+    errors.extend(_check_errors(response, request))
+    errors.extend(_quote_errors(
+        {"narrative": response.narrative}, request.hidden_plot,
+        [request.game_state.room_context, request.player_action,
+         *(text for entry in request.history for text in (entry.player_action, entry.narrative))],
+    ))
     generated_names = {}
     if response.new_location is not None and response.new_location != request.game_state.location:
         generated_names["new_location"] = response.new_location
@@ -182,7 +275,7 @@ def _check_error(ability: str, request: TurnRequest) -> str | None:
          if character.name == request.acting_character),
         None,
     )
-    if actor is None or ability not in actor.abilities:
+    if actor is None or ability not in (actor.abilities or actor.stats):
         return f"Характеристика {ability!r} отсутствует у действующего персонажа."
     return None
 

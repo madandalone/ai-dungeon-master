@@ -10,9 +10,9 @@ from ai_dm.dm_engine import AIDungeonMaster
 from ai_dm.errors import ProviderError
 from ai_dm.main import DEMO_RULES
 from ai_dm.memory import select_history
-from ai_dm.models import TurnResponse
+from ai_dm.models import CampaignStartRequest, CampaignStartResponse, TurnResponse
 from ai_dm.scene_scenarios import scene_scenarios
-from ai_dm.tests.test_dm_engine import TURN, UncheckedDM, completion, fake_client
+from ai_dm.tests.test_dm_engine import CAMPAIGN, TURN, UncheckedDM, completion, fake_client
 from ai_dm.tests.test_history import action, session
 from engine.dice import Dice, SequenceSource
 from rules_service import RulesService
@@ -36,13 +36,32 @@ class SceneTests(unittest.TestCase):
             for key, scenario in scene_scenarios().items():
                 with self.subTest(case=key):
                     before = scenario.request.model_copy(deep=True)
-                    client = fake_client(completion(json.dumps(TURN)))
-                    AIDungeonMaster(client).process_turn(scenario.request)
+                    if isinstance(scenario.request, CampaignStartRequest):
+                        client = fake_client(completion(json.dumps(CAMPAIGN)))
+                        with patch("ai_dm.dm_engine.DnD5eClient.get_monster", return_value={"name": "Skeleton"}):
+                            AIDungeonMaster(client).generate_campaign_start(scenario.request)
+                        expected = (scenario.request.setting_theme, "СКРЫТЫЙ СЮЖЕТ (hidden_plot)", '"Ловкость": 3')
+                    else:
+                        client = fake_client(completion(json.dumps(TURN)))
+                        AIDungeonMaster(client).process_turn(scenario.request)
+                        expected = (scenario.request.player_action, scenario.request.hidden_plot)
                     messages = client.chat.completions.create.call_args.kwargs["messages"]
-                    self.assertIn(scenario.request.player_action, messages[1]["content"])
-                    self.assertIn(scenario.request.hidden_plot, messages[1]["content"])
+                    for text in expected:
+                        self.assertIn(text, messages[1]["content"])
                     self.assertEqual(scenario.request, before)
                     self.assertEqual(client.chat.completions.create.call_count, 1)
+
+    def test_check_scenarios_cover_both_stages_of_a_turn(self):
+        cases = scene_scenarios()
+        self.assertIsNone(cases["check_request"].request.check_result)
+        self.assertFalse(cases["check_outcome"].request.check_result.success)
+        self.assertEqual(cases["missing_rules"].request.game_state.active_characters[0].stats, {})
+        for key, marker in (("check_request", "Сначала реши, нужна ли проверка"),
+                            ("check_outcome", "уже бросил кубик")):
+            with self.subTest(case=key):
+                client = fake_client(completion(json.dumps(TURN)))
+                AIDungeonMaster(client).process_turn(cases[key].request)
+                self.assertIn(marker, client.chat.completions.create.call_args.kwargs["messages"][1]["content"])
 
     def test_accepted_notes_reach_next_turn_but_not_narration(self):
         notes = "Кузнец ждёт молот в обмен на серебряный ключ. Сделка ещё не заключена."
@@ -80,8 +99,20 @@ class EvaluationCommandTests(unittest.TestCase):
         dm.assert_not_called()
         report = json.loads(output.getvalue())
         self.assertFalse(report["llm_called"])
-        self.assertEqual(len(report["scenarios"]), 6)
+        self.assertEqual(len(report["scenarios"]), 9)
         self.assertNotIn("response", report)
+
+    def test_campaign_case_generates_a_campaign_start(self):
+        output = io.StringIO()
+        with patch.object(evaluate_scenes, "AIDungeonMaster") as dm, redirect_stdout(output):
+            dm.return_value.generate_campaign_start.return_value = CampaignStartResponse(**CAMPAIGN)
+            self.assertEqual(evaluate_scenes.main(["--live", "--case", "campaign_start"]), 0)
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["response"], CAMPAIGN)
+        self.assertEqual(report["review_status"], "pending")
+        self.assertEqual(report["request"]["monster_encounter"], "skeleton")
+        dm.return_value.generate_campaign_start.assert_called_once()
+        dm.return_value.process_turn.assert_not_called()
 
     def test_live_requires_explicit_case(self):
         with patch.object(evaluate_scenes, "AIDungeonMaster") as dm, redirect_stderr(io.StringIO()):

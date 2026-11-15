@@ -2,13 +2,21 @@
 
 from dataclasses import dataclass
 
-from ai_dm.models import CharacterState, GameState, TurnHistoryEntry, TurnRequest
+from ai_dm.models import (
+    CampaignStartRequest,
+    CharacterState,
+    CheckResult,
+    GameState,
+    TurnHistoryEntry,
+    TurnRequest,
+)
 
 
 @dataclass(frozen=True)
 class SceneScenario:
     name: str
-    request: TurnRequest
+    # A turn to play, or a campaign start to generate.
+    request: TurnRequest | CampaignStartRequest
     criteria: tuple[str, ...]
 
 
@@ -81,7 +89,39 @@ def scene_scenarios() -> dict[str, SceneScenario]:
         "Описывает попытку или доступное наблюдение, не утверждает неподтверждённое попадание и смерть.",
         "Не создаёт state_updates для отсутствующего среди active_characters кузнеца.",
     ))
+    risky = base.model_copy(deep=True)
+    risky.game_state.active_characters[0].stats = {"Ловкость": 3, "Сила": 1, "Внимательность": 2}
+    risky.player_action = "Пока кузнец отвернулся к печи, пытаюсь незаметно стянуть серебряный ключ со стола."
+    check_request = SceneScenario("Запрос проверки для рискованного действия", risky, (
+        "Возвращает requires_check: true и check со stat из характеристик героя, подходящей к действию.",
+        "Сложность — целое от 5 до 30 и соразмерна ситуации; число на кубике не названо.",
+        "Не описывает успех или провал; state_updates пуст, ключ не добавлен в инвентарь.",
+    ))
+    failed = risky.model_copy(deep=True)
+    failed.check_result = CheckResult(
+        stat="Ловкость", difficulty=15, roll=4, modifier=3, total=7, success=False,
+    )
+    check_outcome = SceneScenario("Описание провала после броска", failed, (
+        "Описывает именно провал попытки; ключ не попадает в инвентарь.",
+        "Последствие соразмерно: кузнец замечает попытку или ключ остаётся на месте, без выдуманного урона.",
+        "Не запрашивает вторую проверку и не меняет числа броска; следующий выбор остаётся за игроком.",
+    ))
+    campaign = SceneScenario("Начало кампании со связным скрытым сюжетом", CampaignStartRequest(
+        setting_theme="Кузница на окраине города, рядом с которой по ночам пропадают кости с кладбища.",
+        characters=[CharacterState(
+            name="Элиас", hp=12, max_hp=12, inventory=["Кинжал", "Набор воровских инструментов"],
+            stats={"Ловкость": 3, "Сила": 1, "Внимательность": 2},
+        )],
+        monster_encounter="skeleton",
+    ), (
+        "hidden_plot связно объясняет, кто стоит за событиями, зачем, какова роль монстра и чем всё может кончиться.",
+        "В hidden_plot есть две-три конкретные зацепки, а room_context показывает хотя бы одну как наблюдаемую деталь.",
+        "intro_narrative и room_context не называют виновника, его цель и развязку и не цитируют hidden_plot.",
+        "Сюжет связан с темой и героем; завязка не решает за героя и оставляет первый выбор игроку.",
+    ))
     return dict(zip(
-        ("repeat_inspection", "new_approach", "old_clue", "npc_dialogue", "secret_request", "missing_rules"),
-        (repeated, changed, return_clue, npc, injection, no_rules), strict=True,
+        ("repeat_inspection", "new_approach", "old_clue", "npc_dialogue", "secret_request", "missing_rules",
+         "check_request", "check_outcome", "campaign_start"),
+        (repeated, changed, return_clue, npc, injection, no_rules, check_request, check_outcome, campaign),
+        strict=True,
     ))

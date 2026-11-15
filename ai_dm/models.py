@@ -1,5 +1,11 @@
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, model_validator
+
+
+AbilityName = Literal[
+    "strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma",
+]
+DifficultyClass = Literal[5, 10, 15, 20, 25, 30]
 
 # --- Входной контекст от Game Engine и Rules Service ---
 class CharacterState(BaseModel):
@@ -8,6 +14,8 @@ class CharacterState(BaseModel):
     max_hp: int
     inventory: List[str]
     abilities: dict[str, int] = Field(default_factory=dict)
+    # Совместимость с первым контрактом AI DM, где передавались готовые модификаторы.
+    stats: Dict[str, int] = Field(default_factory=dict)
 
 class GameState(BaseModel):
     location: str
@@ -23,6 +31,26 @@ class TurnHistoryEntry(BaseModel):
     dm_notes: str = ""
 
 
+class CheckResult(BaseModel):
+    """Неизменяемый итог проверки, выполненной Game Engine."""
+
+    ability: Optional[AbilityName] = None
+    stat: Optional[str] = None
+    difficulty: int = Field(ge=5, le=30)
+    roll: int = Field(ge=1, le=20)
+    modifier: int
+    total: int
+    success: bool
+
+    @model_validator(mode="after")
+    def _ability_or_legacy_stat(self) -> "CheckResult":
+        if self.ability is None and not self.stat:
+            raise ValueError("ability or stat is required")
+        if self.stat is None and self.ability is not None:
+            self.stat = self.ability
+        return self
+
+
 class TurnRequest(BaseModel):
     rules_summary: str        # Краткие правила игры
     hidden_plot: str          # Скрытый сюжет (видит только Мастер)
@@ -31,6 +59,8 @@ class TurnRequest(BaseModel):
     history: List[TurnHistoryEntry] = Field(default_factory=list)
     # Имя персонажа, совершающего действие; пустая строка — не указан (старые вызовы).
     acting_character: str = ""
+    # Второй этап хода: результат уже выполненной проверки; None — проверки ещё не было.
+    check_result: Optional[CheckResult] = None
 
     @model_validator(mode="after")
     def _acting_character_is_active(self) -> "TurnRequest":
@@ -47,7 +77,23 @@ class StateDelta(BaseModel):
     items_added: List[str] = Field(default_factory=list)
     items_removed: List[str] = Field(default_factory=list)
 
+class CheckRequest(BaseModel):
+    """Запрос проверки характеристики; бросок выполняет Game Engine, а не модель."""
+
+    stat: str = Field(
+        description="Название характеристики действующего персонажа, точно как в его stats"
+    )
+    difficulty: int = Field(description="Сложность проверки: целое число от 5 до 30")
+
+
 class TurnResponse(BaseModel):
+    # Решение о проверке стоит первым: модель принимает его до написания повествования.
+    requires_check: bool = Field(
+        False, description="true, если исход действия должен решить бросок кубика в Game Engine"
+    )
+    check: Optional[CheckRequest] = Field(
+        None, description="Параметры проверки при requires_check: true, иначе null"
+    )
     narrative: str = Field(
         description="Художественное описание последствий хода для игрока (атмосферно, от 2-го лица)"
     )
@@ -60,12 +106,6 @@ class TurnResponse(BaseModel):
     dm_thoughts: str = Field(
         description="Скрытые заметки мастера: как изменился скрытый сюжет или отношение окружения"
     )
-
-
-AbilityName = Literal[
-    "strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma",
-]
-DifficultyClass = Literal[5, 10, 15, 20, 25, 30]
 
 
 class SkillCheckProposal(BaseModel):
@@ -92,15 +132,6 @@ class TurnPlan(BaseModel):
             # It is deliberately discarded before it can reach Engine.
             self.response = None
         return self
-
-
-class CheckResult(BaseModel):
-    ability: AbilityName
-    roll: int = Field(ge=1, le=20)
-    modifier: int
-    total: int
-    difficulty: DifficultyClass
-    success: bool
 
 
 class CheckResolution(BaseModel):

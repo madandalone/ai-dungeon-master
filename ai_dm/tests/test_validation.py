@@ -1,6 +1,12 @@
 import unittest
 
-from ai_dm.models import CampaignStartRequest, CampaignStartResponse, CharacterState, TurnResponse
+from ai_dm.models import (
+    CampaignStartRequest,
+    CampaignStartResponse,
+    CharacterState,
+    TurnHistoryEntry,
+    TurnResponse,
+)
 from ai_dm.tests.test_dm_engine import CAMPAIGN, TURN, turn_request
 from ai_dm.validation import validate_campaign, validate_turn
 
@@ -153,6 +159,76 @@ class ValidationTests(unittest.TestCase):
             **TURN, "state_updates": [{"character_name": "Элиас", "hp_change": -100}],
         })
         validate_turn(response, request=turn_request())
+
+
+PLOT = ("Кузнец Берн скрывает под верстаком письмо некроманта и по ночам носит ему кости "
+        "с городского кладбища. Скелет в подвале кузницы сторожит сундук с остальными письмами.")
+
+
+class HiddenPlotQuoteTests(unittest.TestCase):
+    def request(self, **changes):
+        request = turn_request()
+        request.hidden_plot = PLOT
+        for field, value in changes.items():
+            setattr(request, field, value)
+        return request
+
+    def narrate(self, text, request):
+        return validate_turn(TurnResponse(**{**TURN, "narrative": text}), request=request)
+
+    def test_narrative_quoting_the_hidden_plot_is_rejected(self):
+        for text in (
+            PLOT,
+            "Ты вдруг понимаешь: кузнец берн скрывает под верстаком письмо некроманта!",
+            "Мастер шепчет: «Скелет в подвале кузницы сторожит сундук с остальными письмами».",
+        ):
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, "narrative дословно повторяют скрытый сюжет"):
+                    self.narrate(text, self.request())
+
+    def test_paraphrase_and_short_shared_phrases_are_not_flagged(self):
+        for text in (
+            "Под верстаком ты замечаешь сложенный лист бумаги.",
+            "Кузнец Берн хмурится и отводит взгляд от верстака.",
+            "В подвале кузницы слышен сухой стук костей.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.narrate(text, self.request()).narrative, text)
+
+    def test_wording_players_have_already_seen_is_not_a_leak(self):
+        public = "Скелет в подвале кузницы сторожит сундук с остальными письмами."
+        seen_in_room = self.request()
+        seen_in_room.game_state.room_context = public
+        seen_in_history = self.request(history=[TurnHistoryEntry(
+            player_action="Спускаюсь в подвал.", narrative=public, dm_notes="Сундук ещё закрыт.",
+        )])
+        said_by_player = self.request(player_action=f"Говорю: {public}")
+        for request in (seen_in_room, seen_in_history, said_by_player):
+            with self.subTest():
+                self.assertEqual(self.narrate(public, request).narrative, public)
+
+    def test_private_notes_may_restate_the_plot(self):
+        response = TurnResponse(**{**TURN, "dm_thoughts": PLOT})
+        self.assertEqual(validate_turn(response, request=self.request()).dm_thoughts, PLOT)
+
+    def test_campaign_intro_must_not_quote_its_own_hidden_plot(self):
+        request = CampaignStartRequest(setting_theme="Кузница на окраине", characters=[])
+        base = {**CAMPAIGN, "hidden_plot": PLOT, "room_context": "У стены верстак, пахнет углём."}
+        leaked = CampaignStartResponse(**{
+            **base, "intro_narrative": "Вы знаете, что скелет в подвале кузницы сторожит сундук с остальными письмами.",
+        })
+        with self.assertRaisesRegex(ValueError, "intro_narrative дословно повторяют скрытый сюжет"):
+            validate_campaign(leaked, request=request)
+        safe = CampaignStartResponse(**{**base, "intro_narrative": "Из кузницы на окраине доносится стук молота."})
+        self.assertEqual(validate_campaign(safe, request=request).hidden_plot, PLOT)
+
+    def test_campaign_scene_details_may_repeat_plot_wording(self):
+        request = CampaignStartRequest(setting_theme="Кузница", characters=[])
+        shared = "Скелет в подвале кузницы сторожит сундук с остальными письмами."
+        response = CampaignStartResponse(**{
+            **CAMPAIGN, "hidden_plot": PLOT, "room_context": shared, "intro_narrative": shared,
+        })
+        validate_campaign(response, request=request)
 
 
 if __name__ == "__main__":
