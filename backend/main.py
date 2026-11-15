@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from ai_dm.models import (
     CheckResult,
-    SkillCheckProposal,
     StateDelta,
     TurnHistoryEntry,
     TurnRequest,
@@ -31,15 +30,16 @@ from engine.commands import AdjustHealth, SkillCheck
 from engine.dice import Dice, LocalRandomSource, SystemRandomSource
 from engine.events import SkillCheckResolved
 from engine.models import ABILITIES, Character, GameState, InventoryItem, PlayerAction
-from integration import IntegrationError, TurnOrchestrator, TurnOutcome, TurnPlanningOutcome
+from integration import IntegrationError, TurnOrchestrator, TurnOutcome
 from integration.factory import build_orchestrator
 from integration.turns import IdempotentExecutor, make_player_action
 
+
 app = FastAPI(title="AI Dungeon Master API")
+
+
 @app.exception_handler(StateRevisionConflict)
 async def handle_revision_conflict(request, exc: StateRevisionConflict):
-    from fastapi.responses import JSONResponse
-
     return JSONResponse(
         status_code=409,
         content={
@@ -50,17 +50,23 @@ async def handle_revision_conflict(request, exc: StateRevisionConflict):
         },
     )
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5500", "http://localhost:5500"],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Content-Type"],
 )
 
+
 class GameSessionCreate(BaseModel):
     name: str
-
+    hidden_plot: str = Field(
+        default="Test campaign",
+        min_length=1,
+        max_length=20000,
+    )
 
 class GameSession(BaseModel):
     id: str
@@ -92,7 +98,10 @@ class CharacterCreateRequest(BaseModel):
     def _six_abilities(self) -> "CharacterCreateRequest":
         if set(self.stats) != set(ABILITIES):
             raise ValueError("All six D&D abilities are required")
-        if any(isinstance(value, bool) or not 1 <= value <= 20 for value in self.stats.values()):
+        if any(
+            isinstance(value, bool) or not 1 <= value <= 20
+            for value in self.stats.values()
+        ):
             raise ValueError("Ability scores must be integers from 1 to 20")
         return self
 
@@ -124,51 +133,10 @@ game_states: dict[str, GameState] = {}
 game_histories: dict[str, list[TurnHistoryEntry]] = {}
 turn_executor = IdempotentExecutor()
 
+
 @lru_cache(maxsize=1)
 def get_orchestrator() -> TurnOrchestrator:
     return build_orchestrator()
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
-
-
-@app.post("/sessions", response_model=GameSession)
-def create_session(session_data: GameSessionCreate):
-    session = GameSession(
-        id=str(uuid4()),
-        name=session_data.name,
-    )
-
-    sessions[session.id] = session
-
-    characters = (
-        Character(
-            id="hero",
-            name="Hero",
-            concept="Adventurer",
-            hp=10,
-            max_hp=10,
-            stats={ability: 10 for ability in ABILITIES},
-            inventory=(),
-        ),
-    )
-
-    game_states[session.id] = GameState(
-        session_id=session.id,
-        revision=0,
-        turn_number=0,
-        location_id="start",
-        characters=characters,
-        world_flags={},
-    )
-    game_histories[session.id] = []
-    get_session_store().save_session(
-        session.id,
-        session.name,
-        game_states[session.id],
-    )
-    return session
 
 
 @lru_cache(maxsize=1)
@@ -199,16 +167,111 @@ def ensure_session_loaded(session_id: str) -> None:
     game_histories[session_id] = history
 
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
+
+@app.post("/sessions", response_model=GameSession)
+def create_session(session_data: GameSessionCreate):
+    session = GameSession(
+        id=str(uuid4()),
+        name=session_data.name,
+    )
+
+    characters = (
+        Character(
+            id="hero",
+            name="Hero",
+            concept="Adventurer",
+            hp=10,
+            max_hp=10,
+            stats={ability: 10 for ability in ABILITIES},
+            inventory=(),
+        ),
+    )
+
+    state = GameState(
+        session_id=session.id,
+        revision=0,
+        turn_number=0,
+        location_id="start",
+        characters=characters,
+        world_flags={},
+    )
+
+    # Persist first; expose in memory only after successful storage.
+    get_session_store().save_session(
+        session.id,
+        session.name,
+        state,
+        hidden_plot=session_data.hidden_plot,
+    )
+
+    sessions[session.id] = session
+    game_states[session.id] = state
+    game_histories[session.id] = []
+
+    return session
+
+
+@app.get("/sessions", response_model=list[GameSession])
+def list_sessions():
+    """Return saved sessions, including sessions not loaded in memory."""
+    return [
+        GameSession(id=session_id, name=name)
+        for session_id, name in get_session_store().list_sessions()
+    ]
+
+
+@app.delete("/sessions/{session_id}")
+def delete_session(session_id: str):
+    """Delete a saved session and its related persistent records."""
+
+    def execute_delete():
+        deleted = get_session_store().delete_session(session_id)
+
+        if not deleted:
+            raise HTTPException(
+                status_code=404,
+                detail="Session not found",
+            )
+
+        sessions.pop(session_id, None)
+        game_states.pop(session_id, None)
+        game_histories.pop(session_id, None)
+
+        return {
+            "status": "deleted",
+            "session_id": session_id,
+        }
+
+    response, _ = turn_executor.run(
+        session_id,
+        f"delete:{session_id}",
+        execute_delete,
+        remember=lambda result: False,
+    )
+    return response
+
+
 def _success_chance(modifier: int, difficulty: int) -> int:
-    successful = sum(1 for roll in range(1, 21) if roll + modifier >= difficulty)
+    successful = sum(
+        1 for roll in range(1, 21)
+        if roll + modifier >= difficulty
+    )
     return successful * 5
 
 
 def _pending_public(payload: dict, state: GameState) -> dict:
     check = payload["check"]
-    character = next(c for c in state.characters if c.id == payload["action"]["character_id"])
+    character = next(
+        c for c in state.characters
+        if c.id == payload["action"]["character_id"]
+    )
     score = character.stats[check["ability"]]
     modifier = ability_modifier(score)
+
     return {
         "status": "awaiting_roll",
         "action_id": payload["action"]["action_id"],
@@ -232,7 +295,9 @@ def _pending_response(payload: dict, state: GameState) -> dict:
         "status": "awaiting_roll",
         "pending_turn": _pending_public(payload, state),
         "state": to_public_dict(
-            state, session_name=sessions[state.session_id].name, log=[],
+            state,
+            session_name=sessions[state.session_id].name,
+            log=[],
         ),
         "revision": state.revision,
         "turn_number": state.turn_number,
@@ -275,13 +340,19 @@ def _turn_response(
     *,
     clear_pending: bool = False,
 ) -> dict:
-    warnings = ([{"code": "RULES_UNAVAILABLE"}] if outcome.rules_failed else [])
+    warnings = (
+        [{"code": "RULES_UNAVAILABLE"}]
+        if outcome.rules_failed else []
+    )
+
     response = {
         "status": "resolved",
         "accepted": outcome.accepted,
         "narration": outcome.narration,
         "state": to_public_dict(
-            outcome.state, session_name=sessions[session_id].name, log=[],
+            outcome.state,
+            session_name=sessions[session_id].name,
+            log=[],
         ),
         "revision": outcome.state.revision,
         "turn_number": outcome.state.turn_number,
@@ -292,19 +363,25 @@ def _turn_response(
         ],
         "warnings": warnings,
     }
-    checks = [event for event in outcome.events if isinstance(event, SkillCheckResolved)]
+
+    checks = [
+        event for event in outcome.events
+        if isinstance(event, SkillCheckResolved)
+    ]
     response["check_outcome"] = (
-        ("success" if all(event.success for event in checks) else "failure")
-        if checks else None
-    )
+        "success" if all(event.success for event in checks) else "failure"
+    ) if checks else None
+
     if not outcome.accepted:
         return response
+
     entry = TurnHistoryEntry(
         character_id=action.character_id,
         player_action=action.text,
         narrative=outcome.narration or "",
         dm_notes=outcome.dm_notes or "",
     )
+
     get_session_store().save_turn(
         session_id,
         outcome.state,
@@ -313,14 +390,20 @@ def _turn_response(
         response=response,
         clear_pending=clear_pending,
     )
+
     game_states[session_id] = outcome.state
     game_histories[session_id].append(entry)
+
     return response
 
 
-def public_state(session_id: str, include_history: bool = True) -> dict:
+def public_state(
+    session_id: str,
+    include_history: bool = True,
+) -> dict:
     history = game_histories[session_id]
     log = []
+
     if include_history:
         for entry in history:
             log.append({
@@ -328,20 +411,28 @@ def public_state(session_id: str, include_history: bool = True) -> dict:
                 "character_id": entry.character_id,
                 "text": entry.player_action,
             })
+
             if entry.narrative.strip():
                 log.append({
                     "kind": "master",
                     "character_id": "",
                     "text": entry.narrative,
                 })
+
     public = to_public_dict(
         game_states[session_id],
         session_name=sessions[session_id].name,
         log=log,
     )
+
     pending = get_session_store().load_pending_turn(session_id)
-    public["pending_turn"] = _pending_public(pending, game_states[session_id]) if pending else None
+    public["pending_turn"] = (
+        _pending_public(pending, game_states[session_id])
+        if pending else None
+    )
+
     return public
+
 
 @app.get("/sessions/{session_id}/state")
 def get_session_state(session_id: str):
@@ -350,13 +441,18 @@ def get_session_state(session_id: str):
 
 
 @app.post("/sessions/{session_id}/characters")
-def create_character(session_id: str, character_data: CharacterCreateRequest):
+def create_character(
+    session_id: str,
+    character_data: CharacterCreateRequest,
+):
     operation_id = str(uuid4())
 
     def execute_creation():
         ensure_session_loaded(session_id)
+
         item_name = character_data.starting_item.strip()
         inventory = ()
+
         if item_name:
             inventory = (
                 InventoryItem(
@@ -365,30 +461,41 @@ def create_character(session_id: str, character_data: CharacterCreateRequest):
                     quantity=1,
                 ),
             )
+
         character = Character(
             id=str(uuid4()),
             name=character_data.name.strip(),
             concept=character_data.concept.strip(),
             hp=character_data.max_hp,
             max_hp=character_data.max_hp,
-            stats={name.strip(): value for name, value in character_data.stats.items()},
+            stats={
+                name.strip(): value
+                for name, value in character_data.stats.items()
+            },
             inventory=inventory,
         )
+
         result = add_character(
             game_states[session_id],
             character,
             character_data.expected_revision,
         )
+
         if not result.accepted:
             error = result.errors[0]
             status = 409 if error.code == "STALE_REVISION" else 422
+
             raise HTTPException(
                 status_code=status,
-                detail={"code": error.code, "message": error.message},
+                detail={
+                    "code": error.code,
+                    "message": error.message,
+                },
             )
 
         get_session_store().save_state(session_id, result.state)
         game_states[session_id] = result.state
+
         return public_state(session_id)
 
     response, _ = turn_executor.run(
@@ -397,11 +504,15 @@ def create_character(session_id: str, character_data: CharacterCreateRequest):
         execute_creation,
         remember=lambda result: False,
     )
+
     return response
 
 
 @app.post("/sessions/{session_id}/actions")
-def process_action(session_id: str, action_data: PlayerActionRequest):
+def process_action(
+    session_id: str,
+    action_data: PlayerActionRequest,
+):
     action_id = str(uuid4())
 
     def execute_action():
@@ -434,11 +545,17 @@ def process_action(session_id: str, action_data: PlayerActionRequest):
 
         return {
             "accepted": result.accepted,
-            "state": public_state(session_id, include_history=False),
+            "state": public_state(
+                session_id,
+                include_history=False,
+            ),
             "revision": result.state.revision,
             "turn_number": result.state.turn_number,
             "errors": [
-                {"code": error.code, "message": error.message}
+                {
+                    "code": error.code,
+                    "message": error.message,
+                }
                 for error in result.errors
             ],
         }
@@ -449,7 +566,9 @@ def process_action(session_id: str, action_data: PlayerActionRequest):
         execute_action,
         remember=lambda result: False,
     )
+
     return response
+
 
 @app.post("/sessions/{session_id}/turns")
 def process_turn(
@@ -462,26 +581,47 @@ def process_turn(
     def execute_turn():
         ensure_session_loaded(session_id)
         store = get_session_store()
-        saved_response = store.load_processed_turn(session_id, action_id)
+
+        saved_response = store.load_processed_turn(
+            session_id,
+            action_id,
+        )
         if saved_response is not None:
             return saved_response
 
         pending = store.load_pending_turn(session_id)
+
         if pending is not None:
             if pending["action"]["action_id"] != action_id:
                 raise HTTPException(
                     status_code=409,
-                    detail={"code": "PENDING_CHECK", "message": "Finish the pending check first."},
+                    detail={
+                        "code": "PENDING_CHECK",
+                        "message": "Finish the pending check first.",
+                    },
                 )
+
             original = pending["action"]
-            if original["character_id"] != turn_data.character_id or original["text"] != turn_data.text:
+
+            if (
+                original["character_id"] != turn_data.character_id
+                or original["text"] != turn_data.text
+            ):
                 raise HTTPException(
                     status_code=409,
-                    detail={"code": "ACTION_ID_REUSED", "message": "Action id belongs to another turn."},
+                    detail={
+                        "code": "ACTION_ID_REUSED",
+                        "message": "Action id belongs to another turn.",
+                    },
                 )
-            return _pending_response(pending, game_states[session_id])
+
+            return _pending_response(
+                pending,
+                game_states[session_id],
+            )
 
         state = game_states[session_id]
+
         action = make_player_action(
             state=state,
             character_id=turn_data.character_id,
@@ -494,35 +634,61 @@ def process_turn(
             planned = orchestrator.plan_turn(
                 state=state,
                 action=action,
-                hidden_plot="Test campaign",
+                hidden_plot=store.load_hidden_plot(session_id)
+                or "Test campaign",
                 dice=Dice(SystemRandomSource()),
                 history=game_histories[session_id],
             )
         except IntegrationError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc),
+            ) from exc
 
         if isinstance(planned, TurnOutcome):
-            return _turn_response(session_id, action, planned)
+            return _turn_response(
+                session_id,
+                action,
+                planned,
+            )
 
         check = planned.plan.check
+
         payload = {
             "action": asdict(action),
             "request": planned.request.model_dump(),
-            "check": {**check.model_dump(), "sequence": 1},
+            "check": {
+                **check.model_dump(),
+                "sequence": 1,
+            },
             "checks": [],
             "rules_failed": planned.rules_failed,
         }
-        store.save_pending_turn(session_id, action_id, payload)
+
+        store.save_pending_turn(
+            session_id,
+            action_id,
+            payload,
+        )
+
         return _pending_response(payload, state)
 
     result, _replayed = turn_executor.run(
         session_id,
         action_id,
         execute_turn,
-        remember=lambda response: response.get("status") == "resolved" and response.get("accepted", False),
+        remember=lambda response: (
+            response.get("status") == "resolved"
+            and response.get("accepted", False)
+        ),
     )
+
     if result.get("status") == "awaiting_roll":
-        return JSONResponse(status_code=202, content=result)
+        return JSONResponse(
+            status_code=202,
+            content=result,
+        )
+
     return result
 
 
@@ -535,52 +701,105 @@ def roll_turn(
     def execute_roll():
         ensure_session_loaded(session_id)
         store = get_session_store()
-        saved = store.load_processed_turn(session_id, action_id)
+
+        saved = store.load_processed_turn(
+            session_id,
+            action_id,
+        )
         if saved is not None:
             return saved
+
         pending = store.load_pending_turn(session_id)
-        if pending is None or pending["action"]["action_id"] != action_id:
+
+        if (
+            pending is None
+            or pending["action"]["action_id"] != action_id
+        ):
             raise HTTPException(
                 status_code=404,
-                detail={"code": "PENDING_CHECK_NOT_FOUND", "message": "Pending check was not found."},
+                detail={
+                    "code": "PENDING_CHECK_NOT_FOUND",
+                    "message": "Pending check was not found.",
+                },
             )
 
         state = game_states[session_id]
         action = _action_from_payload(pending)
         check_data = pending["check"]
-        events = [_check_event_from_payload(item) for item in pending.get("checks", [])]
+
+        events = [
+            _check_event_from_payload(item)
+            for item in pending.get("checks", [])
+        ]
+
         sequence = check_data["sequence"]
+
         if len(events) < sequence:
             event = resolve_skill_check(
                 state,
                 action,
-                SkillCheck(action.character_id, check_data["ability"], check_data["difficulty"]),
+                SkillCheck(
+                    action.character_id,
+                    check_data["ability"],
+                    check_data["difficulty"],
+                ),
                 Dice(SystemRandomSource()),
                 sequence=sequence - 1,
             )
-            events.append(event)
-            pending["checks"] = [asdict(item) for item in events]
-            store.save_pending_turn(session_id, action_id, pending)
 
-        request = TurnRequest.model_validate(pending["request"])
-        results = [_check_result(event) for event in events]
+            events.append(event)
+            pending["checks"] = [
+                asdict(item) for item in events
+            ]
+
+            store.save_pending_turn(
+                session_id,
+                action_id,
+                pending,
+            )
+
+        request = TurnRequest.model_validate(
+            pending["request"]
+        )
+
+        results = [
+            _check_result(event)
+            for event in events
+        ]
+
         latest = events[-1]
         allow_next = latest.success and len(events) < 3
+
         try:
             continuation = orchestrator.continue_checked_turn(
-                request, results, allow_next=allow_next,
+                request,
+                results,
+                allow_next=allow_next,
             )
         except IntegrationError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc),
+            ) from exc
 
         if continuation.status == "check":
             if not allow_next:
-                raise HTTPException(status_code=502, detail="Dungeon Master exceeded the check limit")
+                raise HTTPException(
+                    status_code=502,
+                    detail="Dungeon Master exceeded the check limit",
+                )
+
             pending["check"] = {
                 **continuation.check.model_dump(),
                 "sequence": len(events) + 1,
             }
-            store.save_pending_turn(session_id, action_id, pending)
+
+            store.save_pending_turn(
+                session_id,
+                action_id,
+                pending,
+            )
+
             return _pending_response(pending, state)
 
         outcome = orchestrator.finalize_turn(
@@ -589,18 +808,34 @@ def roll_turn(
             continuation.response,
             Dice(SystemRandomSource()),
             events,
-            rules_failed=bool(pending.get("rules_failed")),
+            rules_failed=bool(
+                pending.get("rules_failed")
+            ),
         )
+
         return _turn_response(
-            session_id, action, outcome, clear_pending=outcome.accepted,
+            session_id,
+            action,
+            outcome,
+            clear_pending=outcome.accepted,
         )
 
     result, _replayed = turn_executor.run(
-        session_id, action_id, execute_roll,
-        remember=lambda response: response.get("status") == "resolved" and response.get("accepted", False),
+        session_id,
+        action_id,
+        execute_roll,
+        remember=lambda response: (
+            response.get("status") == "resolved"
+            and response.get("accepted", False)
+        ),
     )
+
     if result.get("status") == "awaiting_roll":
-        return JSONResponse(status_code=202, content=result)
+        return JSONResponse(
+            status_code=202,
+            content=result,
+        )
+
     return result
 
 
@@ -609,18 +844,44 @@ def cancel_turn(session_id: str, action_id: str):
     def execute_cancel():
         ensure_session_loaded(session_id)
         store = get_session_store()
+
         pending = store.load_pending_turn(session_id)
-        if pending is None or pending["action"]["action_id"] != action_id:
-            raise HTTPException(status_code=404, detail={"code": "PENDING_CHECK_NOT_FOUND"})
+
+        if (
+            pending is None
+            or pending["action"]["action_id"] != action_id
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "PENDING_CHECK_NOT_FOUND",
+                },
+            )
+
         if pending.get("checks"):
             raise HTTPException(
                 status_code=409,
-                detail={"code": "ROLL_ALREADY_STARTED", "message": "A resolved roll cannot be cancelled."},
+                detail={
+                    "code": "ROLL_ALREADY_STARTED",
+                    "message": "A resolved roll cannot be cancelled.",
+                },
             )
-        store.delete_pending_turn(session_id, action_id)
-        return {"status": "cancelled", "action_id": action_id}
+
+        store.delete_pending_turn(
+            session_id,
+            action_id,
+        )
+
+        return {
+            "status": "cancelled",
+            "action_id": action_id,
+        }
 
     result, _ = turn_executor.run(
-        session_id, action_id, execute_cancel, remember=lambda response: False,
+        session_id,
+        action_id,
+        execute_cancel,
+        remember=lambda response: False,
     )
+
     return result

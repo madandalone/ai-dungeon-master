@@ -64,6 +64,17 @@ class SQLiteSessionStore:
                     payload TEXT NOT NULL
                 );
             """)
+            columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(sessions)"
+                ).fetchall()
+            }
+            if "hidden_plot" not in columns:
+                connection.execute(
+                    "ALTER TABLE sessions "
+                    "ADD COLUMN hidden_plot TEXT NOT NULL DEFAULT 'Test campaign'"
+                )
 
     @staticmethod
     def _state_to_json(state: GameState) -> str:
@@ -112,14 +123,26 @@ class SQLiteSessionStore:
             world_flags=data["world_flags"],
         )
 
-    def save_session(self, session_id: str, name: str, state: GameState) -> None:
-        """Create a session and its initial state atomically."""
+    def save_session(
+        self,
+        session_id: str,
+        name: str,
+        state: GameState,
+        hidden_plot: str = "Test campaign",
+    ) -> None:
+        """Create a session with its initial state and private plot."""
         if state.session_id != session_id:
             raise ValueError("Session ID does not match state")
+
         with self._connect() as connection:
-            connection.execute("INSERT INTO sessions (id, name) VALUES (?, ?)", (session_id, name))
             connection.execute(
-                "INSERT INTO game_states (session_id, payload) VALUES (?, ?)",
+                "INSERT INTO sessions (id, name, hidden_plot) "
+                "VALUES (?, ?, ?)",
+                (session_id, name, hidden_plot),
+            )
+            connection.execute(
+                "INSERT INTO game_states (session_id, payload) "
+                "VALUES (?, ?)",
                 (session_id, self._state_to_json(state)),
             )
 
@@ -139,7 +162,15 @@ class SQLiteSessionStore:
             ).fetchall()
         history = [TurnHistoryEntry(**json.loads(item[0])) for item in history_rows]
         return row[0], self._state_from_json(row[1]), history
+    def load_hidden_plot(self, session_id: str) -> str | None:
+        """Load the private campaign plot."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT hidden_plot FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
 
+        return row[0] if row is not None else None
     def save_turn(
         self,
         session_id: str,
@@ -263,6 +294,23 @@ class SQLiteSessionStore:
             )
         return cursor.rowcount == 1
 
+    def list_sessions(self) -> list[tuple[str, str]]:
+        """Return saved sessions, newest first."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, name FROM sessions ORDER BY rowid DESC"
+            ).fetchall()
+        return [(session_id, name) for session_id, name in rows]
+
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session and all related records via ON DELETE CASCADE."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+            return cursor.rowcount == 1
+
     def save_state(self, session_id: str, state: GameState) -> None:
         """Persist a state change using optimistic concurrency control."""
         if state.session_id != session_id:
@@ -280,15 +328,15 @@ class SQLiteSessionStore:
                 ),
             )
 
-        if cursor.rowcount != 1:
-            exists = connection.execute(
-                "SELECT 1 FROM game_states WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
+            if cursor.rowcount != 1:
+                exists = connection.execute(
+                    "SELECT 1 FROM game_states WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
 
-            if exists is None:
-                raise KeyError(f"Unknown session: {session_id}")
+                if exists is None:
+                    raise KeyError(f"Unknown session: {session_id}")
 
-            raise StateRevisionConflict(
-                f"Unexpected revision for session {session_id}"
-            )
+                raise StateRevisionConflict(
+                    f"Unexpected revision for session {session_id}"
+                )
