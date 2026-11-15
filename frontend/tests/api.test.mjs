@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   ApiError, createCharacter, createSession, fetchHealth, fetchSessionState,
-  normalizePublicEvents, resolveApiBase, submitTurn,
+  normalizePublicEvents, resolveApiBase, rollTurn, submitTurn,
 } from "../js/api.js";
 
 function response(body, { ok = true, status = 200 } = {}) {
@@ -61,7 +61,10 @@ test("character creation sends setup data and validates the new state", async ()
     name: "Элиас",
     concept: "Плут",
     maxHp: 12,
-    stats: { "ловкость": 3 },
+    stats: {
+      strength: 10, dexterity: 14, constitution: 10,
+      intelligence: 10, wisdom: 12, charisma: 10,
+    },
     startingItem: "кинжал",
   }, async (url, options) => {
     request = { url, options };
@@ -74,7 +77,10 @@ test("character creation sends setup data and validates the new state", async ()
     name: "Элиас",
     concept: "Плут",
     max_hp: 12,
-    stats: { "ловкость": 3 },
+    stats: {
+      strength: 10, dexterity: 14, constitution: 10,
+      intelligence: 10, wisdom: 12, charisma: 10,
+    },
     starting_item: "кинжал",
   });
   assert.equal(result.revision, 4);
@@ -107,6 +113,40 @@ test("turn request sends the backend contract", async () => {
   assert.deepEqual(result.events, []);
 });
 
+test("pending turn and roll responses use the two-phase contract", async () => {
+  const pending = {
+    status: "awaiting_roll",
+    action_id: "a1",
+    character_id: "hero",
+    text: "Force the door",
+    sequence: 1,
+    maximum: 3,
+    ability: "strength",
+    score: 14,
+    modifier: 2,
+    difficulty: 15,
+    chance: 40,
+    reason: "The door is stuck.",
+    resolved_checks: [],
+    can_cancel: true,
+  };
+  const planned = await submitTurn("s1", { actionId: "a1", characterId: "hero", text: "Force" }, async () => response({
+    status: "awaiting_roll", pending_turn: pending, state: state({ session_id: "s1" }), revision: 0, turn_number: 0,
+  }));
+  assert.equal(planned.pending_turn.chance, 40);
+
+  let rollUrl = "";
+  const rolled = await rollTurn("s1", "a1", async (url) => {
+    rollUrl = url;
+    return response({
+      status: "resolved", accepted: true, narration: "Opened.", state: state({ session_id: "s1", revision: 1, turn_number: 1 }),
+      revision: 1, turn_number: 1, errors: [], warnings: [], events: [], check_outcome: "success",
+    });
+  });
+  assert.match(rollUrl, /sessions\/s1\/turns\/a1\/roll$/);
+  assert.equal(rolled.status, "resolved");
+});
+
 test("public turn events are allowlisted and private fields are discarded", () => {
   const events = normalizePublicEvents([
     {
@@ -118,6 +158,19 @@ test("public turn events are allowlisted and private fields are discarded", () =
       new_hp: 8,
       delta: -2,
       dm_notes: "private",
+    },
+    {
+      type: "skill_check_resolved",
+      action_id: "a1",
+      sequence: 1,
+      character_id: "hero",
+      ability: "strength",
+      roll: 13,
+      modifier: 2,
+      total: 15,
+      difficulty: 15,
+      success: true,
+      hidden_plot: "private",
     },
     { type: "world_flag_changed", action_id: "a1", sequence: 1, key: "secret", value: true },
     { type: "future_event", action_id: "a1", sequence: 2, hidden_plot: "private" },
@@ -131,6 +184,17 @@ test("public turn events are allowlisted and private fields are discarded", () =
     previous_hp: 10,
     new_hp: 8,
     delta: -2,
+  }, {
+    type: "skill_check_resolved",
+    action_id: "a1",
+    sequence: 1,
+    character_id: "hero",
+    ability: "strength",
+    roll: 13,
+    modifier: 2,
+    total: 15,
+    difficulty: 15,
+    success: true,
   }]);
   assert.equal(normalizePublicEvents({}), null);
 });

@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   LEGACY_STORAGE_KEY, STORAGE_KEY, activateSession, activePublicState, emptyPublicState,
-  loadSessionStore, migrateLegacyState, putSession, saveSessionStore,
+  loadSessionStore, migrateLegacyState, normalizePublicState, putSession, saveSessionStore,
 } from "../js/state.js";
 
 function memoryStorage(initial = {}) {
@@ -65,4 +65,14 @@ test("invalid turn metadata falls back to zero", () => {
   });
   assert.equal(activePublicState(state).revision, 0);
   assert.equal(activePublicState(state).turn_number, 0);
+});
+
+test("pending check survives local normalization for page reload", () => {
+  const pending = {
+    status: "awaiting_roll", action_id: "a1", character_id: "hero", text: "Open",
+    sequence: 1, maximum: 3, ability: "strength", score: 14, modifier: 2,
+    difficulty: 15, chance: 40, reason: "Stuck", resolved_checks: [], can_cancel: true,
+  };
+  const normalized = normalizePublicState({ ...emptyPublicState("s1", "Quest", "server"), pending_turn: pending });
+  assert.deepEqual(normalized.pending_turn, pending);
 });

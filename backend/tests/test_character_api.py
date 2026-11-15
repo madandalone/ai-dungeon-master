@@ -38,7 +38,14 @@ class CharacterAPITests(unittest.TestCase):
             "name": "Элиас",
             "concept": "Плут",
             "max_hp": 12,
-            "stats": {"ловкость": 3},
+            "stats": {
+                "strength": 10,
+                "dexterity": 14,
+                "constitution": 10,
+                "intelligence": 10,
+                "wisdom": 12,
+                "charisma": 10,
+            },
             "starting_item": "кинжал",
         }
         data.update(changes)

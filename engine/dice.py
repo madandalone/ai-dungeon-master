@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import secrets
 from typing import Protocol, Sequence
 
 
@@ -31,6 +32,16 @@ class LocalRandomSource:
 
     def __init__(self, generator: random.Random | None = None) -> None:
         self._generator = random.Random() if generator is None else generator
+
+    def randint(self, low: int, high: int) -> int:
+        return self._generator.randint(low, high)
+
+
+class SystemRandomSource:
+    """Use operating-system randomness for real game rolls."""
+
+    def __init__(self, generator: secrets.SystemRandom | None = None) -> None:
+        self._generator = secrets.SystemRandom() if generator is None else generator
 
     def randint(self, low: int, high: int) -> int:
         return self._generator.randint(low, high)

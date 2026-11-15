@@ -92,7 +92,9 @@ function receiptFromEvent(event) {
     return {
       type: event.type,
       characterId: event.character_id,
-      stat: event.stat,
+      ability: event.ability,
+      roll: event.roll,
+      modifier: event.modifier,
       total: event.total,
       difficulty: event.difficulty,
       success: event.success,

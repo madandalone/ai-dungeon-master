@@ -1,5 +1,6 @@
 import {
-  ApiError, createCharacter, createSession, fetchHealth, fetchSessionState, submitTurn,
+  ApiError, cancelTurn, createCharacter, createSession, fetchHealth, fetchSessionState,
+  rollTurn, submitTurn,
 } from "./api.js";
 import { SETTINGS_KEY, applyTranslations, getLanguage, initLanguage, setLanguage, t } from "./i18n.js";
 import {
@@ -52,7 +53,6 @@ const elements = {
   characterMessage: document.querySelector("#character-message"),
   characterFormNotice: document.querySelector("#character-form-notice"),
   statRows: document.querySelector("#stat-rows"),
-  addStat: document.querySelector("#add-stat"),
   characterGrid: document.querySelector("#character-grid"),
   characterCount: document.querySelector("#character-count"),
   actionForm: document.querySelector("#action-form"),
@@ -70,6 +70,18 @@ const elements = {
   turnReceipt: document.querySelector("#turn-receipt"),
   receiptTurn: document.querySelector("#receipt-turn"),
   receiptList: document.querySelector("#receipt-list"),
+  skillCheckCard: document.querySelector("#skill-check-card"),
+  skillCheckTitle: document.querySelector("#skill-check-title"),
+  skillCheckReason: document.querySelector("#skill-check-reason"),
+  skillCheckFormula: document.querySelector("#skill-check-formula"),
+  skillCheckChance: document.querySelector("#skill-check-chance"),
+  rollD20: document.querySelector("#roll-d20"),
+  cancelCheck: document.querySelector("#cancel-check"),
+  diceOverlay: document.querySelector("#dice-overlay"),
+  diceTitle: document.querySelector("#dice-title"),
+  d20: document.querySelector("#d20"),
+  d20Value: document.querySelector("#d20-value"),
+  diceFormula: document.querySelector("#dice-formula"),
   activeHero: document.querySelector("#active-hero"),
   worldLocation: document.querySelector("#world-location"),
   worldSessionName: document.querySelector("#world-session-name"),
@@ -105,6 +117,9 @@ let actionFeedback = null;
 let componentStates = { backend: "checking", dm: "unknown", rules: "unknown", history: "unknown" };
 const syncTimes = new Map();
 const receiptsBySession = new Map();
+const ABILITY_KEYS = new Set([
+  "strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma",
+]);
 
 function currentState() {
   return activePublicState(store);
@@ -203,8 +218,7 @@ function renderControls() {
   setFormDisabled(elements.joinSessionForm, !canReachBackend());
   const canCreateCharacter = canReachBackend() && state?.connection === "server" && !characterPending;
   setFormDisabled(elements.characterForm, !canCreateCharacter);
-  setFormDisabled(elements.actionForm, !canPlay(state) || turnPending);
-  elements.addStat.disabled = !canCreateCharacter;
+  setFormDisabled(elements.actionForm, !canPlay(state) || turnPending || Boolean(state?.pending_turn));
   elements.characterFormNotice.textContent = characterPending
     ? t("characters.creating")
     : canCreateCharacter
@@ -215,6 +229,7 @@ function renderControls() {
   else if (!canReachBackend()) elements.actionHint.textContent = t("offline.body");
   else if (state.connection !== "server") elements.actionHint.textContent = t("game.localReadOnly");
   else if (turnPending) elements.actionHint.textContent = t("game.thinkingHint");
+  else if (state.pending_turn) elements.actionHint.textContent = t("check.pendingHint");
   else elements.actionHint.textContent = t("game.readyHint");
   elements.actionForm.setAttribute("aria-busy", String(turnPending));
   elements.actionSubmit.classList.toggle("is-pending", turnPending);
@@ -311,7 +326,7 @@ function characterCard(character, compact = false) {
     entries.forEach(([stat, value]) => {
       const item = document.createElement("li");
       item.className = "stat-chip";
-      item.textContent = `${stat}: ${value}`;
+      item.textContent = `${ABILITY_KEYS.has(stat) ? abilityLabel(stat) : stat}: ${value}`;
       stats.append(item);
     });
 
@@ -462,7 +477,7 @@ function receiptText(receipt) {
     const result = t(receipt.success ? "game.receipt.success" : "game.receipt.failure");
     return t("game.receipt.check", {
       hero,
-      stat: receipt.stat,
+      stat: abilityLabel(receipt.ability),
       total: receipt.total,
       difficulty: receipt.difficulty,
       result,
@@ -506,6 +521,31 @@ function renderTurnReceipt() {
     item.append(icon, text);
     elements.receiptList.append(item);
   });
+}
+
+function abilityLabel(ability) {
+  return t(`ability.${ability}`);
+}
+
+function signedModifier(value) {
+  return value >= 0 ? `+${value}` : String(value);
+}
+
+function renderPendingCheck() {
+  const pending = currentState()?.pending_turn;
+  elements.skillCheckCard.hidden = !pending;
+  if (!pending) return;
+  elements.skillCheckTitle.textContent = t("check.title", {
+    ability: abilityLabel(pending.ability),
+    current: pending.sequence,
+    maximum: pending.maximum,
+  });
+  elements.skillCheckReason.textContent = pending.reason;
+  elements.skillCheckFormula.textContent = `d20 ${signedModifier(pending.modifier)} vs DC ${pending.difficulty}`;
+  elements.skillCheckChance.textContent = t("check.chance", { chance: pending.chance });
+  elements.rollD20.disabled = turnPending;
+  elements.cancelCheck.hidden = !pending.can_cancel;
+  elements.cancelCheck.disabled = turnPending;
 }
 
 function renderWorld() {
@@ -595,12 +635,6 @@ function renderSessions() {
 
 function renderAll() {
   applyTranslations();
-  elements.statRows.querySelectorAll(".stat-row").forEach((row) => {
-    const [nameInput, valueInput] = row.querySelectorAll("input");
-    nameInput.placeholder = t("characters.statName");
-    nameInput.setAttribute("aria-label", t("characters.statName"));
-    valueInput.setAttribute("aria-label", t("characters.statValue"));
-  });
   document.querySelectorAll("[data-language]").forEach((button) => {
     const active = button.dataset.language === getLanguage();
     button.classList.toggle("is-active", active);
@@ -615,48 +649,88 @@ function renderAll() {
   renderLog();
   renderSyncStatus();
   renderTurnReceipt();
+  renderPendingCheck();
   renderWorld();
   renderControls();
   renderActionFeedback();
 }
 
-function addStatRow(name = "", value = "") {
-  const row = document.createElement("div");
-  row.className = "stat-row";
-
-  const nameInput = document.createElement("input");
-  nameInput.type = "text";
-  nameInput.maxLength = 24;
-  nameInput.value = name;
-  nameInput.placeholder = t("characters.statName");
-  nameInput.setAttribute("aria-label", t("characters.statName"));
-
-  const valueInput = document.createElement("input");
-  valueInput.type = "number";
-  valueInput.value = value;
-  valueInput.placeholder = "0";
-  valueInput.setAttribute("aria-label", t("characters.statValue"));
-
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.className = "remove-stat";
-  remove.dataset.i18n = "characters.removeStat";
-  remove.textContent = t("characters.removeStat");
-  remove.addEventListener("click", () => row.remove());
-
-  row.append(nameInput, valueInput, remove);
-  elements.statRows.append(row);
-}
-
 function readStats() {
   const stats = {};
-  elements.statRows.querySelectorAll(".stat-row").forEach((row) => {
-    const [nameInput, valueInput] = row.querySelectorAll("input");
-    const name = nameInput.value.trim();
-    const value = Number(valueInput.value);
-    if (name) stats[name] = Number.isInteger(value) ? value : 0;
+  elements.statRows.querySelectorAll("[data-ability]").forEach((input) => {
+    const value = Number(input.value);
+    stats[input.dataset.ability] = Number.isInteger(value) ? value : 10;
   });
   return stats;
+}
+
+const PIXEL_DIGITS = {
+  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
+  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+  "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
+  "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
+  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+  "5": ["11111", "10000", "10000", "11110", "00001", "00001", "11110"],
+  "6": ["01110", "10000", "10000", "11110", "10001", "10001", "01110"],
+  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00001", "01110"],
+  "?": ["01110", "10001", "00001", "00010", "00100", "00000", "00100"],
+};
+
+function renderDiceValue(value) {
+  const text = String(value);
+  const digits = [...text].map((character) => {
+    const digit = document.createElement("span");
+    digit.className = "pixel-digit";
+    (PIXEL_DIGITS[character] || PIXEL_DIGITS["?"]).join("").split("").forEach((bit) => {
+      const pixel = document.createElement("span");
+      pixel.className = `pixel-cell${bit === "1" ? " is-lit" : ""}`;
+      digit.append(pixel);
+    });
+    return digit;
+  });
+  elements.d20Value.setAttribute("aria-label", text);
+  elements.d20Value.replaceChildren(...digits);
+}
+
+let diceTicker = null;
+
+function startDiceAnimation() {
+  const reduced = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  elements.diceOverlay.hidden = false;
+  elements.diceFormula.textContent = t("check.waitingForMaster");
+  elements.diceTitle.textContent = t("check.rolling");
+  elements.d20.className = `d20${reduced ? "" : " is-rolling"}`;
+  renderDiceValue("?");
+  if (!reduced) {
+    diceTicker = globalThis.setInterval(() => {
+      renderDiceValue(1 + Math.floor(Math.random() * 20));
+    }, 90);
+  }
+}
+
+function stopDiceAnimation() {
+  if (diceTicker !== null) globalThis.clearInterval(diceTicker);
+  diceTicker = null;
+}
+
+async function settleDiceAnimation(check) {
+  stopDiceAnimation();
+  renderDiceValue(check.roll);
+  elements.d20.className = `d20 is-settling ${check.success ? "is-success" : "is-failure"}`;
+  elements.diceTitle.textContent = t(check.success ? "check.success" : "check.failure");
+  elements.diceFormula.textContent = `${check.roll} ${signedModifier(check.modifier)} = ${check.total} vs DC ${check.difficulty}`;
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 850));
+  elements.diceOverlay.hidden = true;
+  elements.d20.className = "d20";
+}
+
+function latestCheck(result, sequence) {
+  const checks = result.status === "awaiting_roll"
+    ? result.pending_turn.resolved_checks
+    : result.events.filter((event) => event.type === "skill_check_resolved");
+  return checks.find((check) => check.sequence === sequence - 1) || checks.at(-1);
 }
 
 function sessionErrorKey(error) {
@@ -811,7 +885,6 @@ elements.joinSessionForm.addEventListener("submit", async (event) => {
   renderAll();
 });
 
-elements.addStat.addEventListener("click", () => addStatRow());
 elements.characterForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const state = currentState();
@@ -842,8 +915,6 @@ elements.characterForm.addEventListener("submit", async (event) => {
     persistStore();
     elements.characterForm.reset();
     elements.characterHp.value = "10";
-    elements.statRows.replaceChildren();
-    addStatRow();
     elements.characterMessage.textContent = t("characters.created", { name });
   } catch (error) {
     if (error instanceof ApiError && error.code === "network_error") {
@@ -867,12 +938,91 @@ elements.actingCharacter.addEventListener("change", () => {
   renderActiveHero();
   renderPinnedContext();
 });
+
+elements.rollD20.addEventListener("click", async () => {
+  const state = currentState();
+  const pending = state?.pending_turn;
+  if (!pending || turnPending) return;
+  turnPending = true;
+  actionFeedback = { kind: "pending", key: "check.waitingForMaster" };
+  startDiceAnimation();
+  renderControls();
+  try {
+    const result = await rollTurn(state.session_id, pending.action_id);
+    const check = latestCheck(result, pending.sequence);
+    if (!check) throw new ApiError("invalid_response");
+    await settleDiceAnimation(check);
+
+    if (result.status === "awaiting_roll") {
+      store = putSession(store, {
+        ...mergeServerState(state, result.state, result),
+        pending_turn: result.pending_turn,
+      });
+      actionFeedback = { kind: "pending", key: "check.nextReady" };
+      persistStore();
+      return;
+    }
+
+    const action = { characterId: pending.character_id, text: pending.text };
+    const next = applyTurnResult(state, action, result);
+    const changes = result.accepted ? stateChanges(state, next) : null;
+    store = putSession(store, { ...next, pending_turn: null });
+    persistStore();
+    if (result.accepted) {
+      const items = turnReceipts(result.events, state, next);
+      receiptsBySession.set(state.session_id, {
+        turnNumber: result.turn_number,
+        items: items.length ? items : [{ type: "no_change" }],
+      });
+      elements.actionText.value = "";
+      const warningKey = warningMessageKey(result.warnings);
+      actionFeedback = warningKey
+        ? { kind: "warning", key: warningKey }
+        : { kind: "success", key: result.check_outcome === "failure" ? "check.turnFailed" : "game.turnAccepted" };
+      if (changes) playStateChanges(changes);
+    } else {
+      actionFeedback = { kind: "error", key: failureMessageKey({ errors: result.errors }) };
+    }
+  } catch (error) {
+    stopDiceAnimation();
+    elements.diceOverlay.hidden = true;
+    if (error instanceof ApiError && error.code === "network_error") {
+      backendState = "offline";
+      componentStates = { ...componentStates, backend: "offline" };
+    }
+    actionFeedback = { kind: "error", key: failureMessageKey(error) };
+  } finally {
+    turnPending = false;
+    renderAll();
+  }
+});
+
+elements.cancelCheck.addEventListener("click", async () => {
+  const state = currentState();
+  const pending = state?.pending_turn;
+  if (!pending || !pending.can_cancel || turnPending) return;
+  turnPending = true;
+  renderControls();
+  try {
+    await cancelTurn(state.session_id, pending.action_id);
+    store = putSession(store, { ...state, pending_turn: null });
+    elements.actionText.value = pending.text;
+    actionFeedback = null;
+    persistStore();
+  } catch (error) {
+    actionFeedback = { kind: "error", key: failureMessageKey(error) };
+  } finally {
+    turnPending = false;
+    renderAll();
+  }
+});
+
 elements.actionForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const state = currentState();
   const text = elements.actionText.value.trim();
   const characterId = elements.actingCharacter.value;
-  if (!canPlay(state) || !characterId || !text || turnPending) return;
+  if (!canPlay(state) || !characterId || !text || turnPending || state.pending_turn) return;
 
   pendingTurnAttempt = createTurnAttempt(
     pendingTurnAttempt,
@@ -886,6 +1036,17 @@ elements.actionForm.addEventListener("submit", async (event) => {
   let scrollToLatest = false;
   try {
     const result = await submitTurn(state.session_id, pendingTurnAttempt);
+    if (result.status === "awaiting_roll") {
+      const waiting = {
+        ...mergeServerState(state, result.state, result),
+        pending_turn: result.pending_turn,
+      };
+      store = putSession(store, waiting);
+      pendingTurnAttempt = null;
+      persistStore();
+      actionFeedback = { kind: "pending", key: "check.ready" };
+      return;
+    }
     const next = applyTurnResult(state, { characterId, text }, result);
     changes = result.accepted ? stateChanges(state, next) : null;
     store = putSession(store, next);
@@ -934,6 +1095,5 @@ elements.actionForm.addEventListener("submit", async (event) => {
 });
 
 if (readUiSettings().sidebarCollapsed) elements.shell.classList.add("is-collapsed");
-addStatRow();
 renderAll();
 checkHealth();

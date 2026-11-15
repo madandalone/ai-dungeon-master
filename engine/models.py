@@ -21,6 +21,25 @@ ErrorCode = Literal[
     "DUPLICATE_CHARACTER",
 ]
 
+Ability = Literal[
+    "strength",
+    "dexterity",
+    "constitution",
+    "intelligence",
+    "wisdom",
+    "charisma",
+]
+
+ABILITIES: tuple[Ability, ...] = (
+    "strength",
+    "dexterity",
+    "constitution",
+    "intelligence",
+    "wisdom",
+    "charisma",
+)
+ALLOWED_DIFFICULTIES = frozenset((5, 10, 15, 20, 25, 30))
+
 FlagValue = Union[bool, int, str]
 
 

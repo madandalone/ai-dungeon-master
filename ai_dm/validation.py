@@ -9,7 +9,9 @@ from ai_dm.models import (
     CampaignStartRequest,
     CampaignStartResponse,
     CharacterState,
+    CheckResolution,
     TurnRequest,
+    TurnPlan,
     TurnResponse,
 )
 
@@ -17,6 +19,10 @@ from ai_dm.models import (
 _RUSSIAN = frozenset("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя")
 _LOOKALIKES = dict(zip("ABCEHKMOPTXYaceopxy", "АВСЕНКМОРТХУасеорху"))
 _WORDS = re.compile(r"\w+")
+_EXPLICIT_UNCERTAINTY = (
+    "пытаюсь", "пытается", "попытка", "рискуя", "риск", "опасн", "сложн",
+    "try", "attempt", "risk", "dangerous", "difficult",
+)
 
 
 def _reference_pattern(references: Sequence[str]) -> re.Pattern[str] | None:
@@ -167,4 +173,47 @@ def validate_turn(response: TurnResponse, *, request: TurnRequest) -> TurnRespon
         )
     if errors:
         raise ValueError(" ".join(errors))
+    return response
+
+
+def _check_error(ability: str, request: TurnRequest) -> str | None:
+    actor = next(
+        (character for character in request.game_state.active_characters
+         if character.name == request.acting_character),
+        None,
+    )
+    if actor is None or ability not in actor.abilities:
+        return f"Характеристика {ability!r} отсутствует у действующего персонажа."
+    return None
+
+
+def validate_turn_plan(response: TurnPlan, *, request: TurnRequest) -> TurnPlan:
+    if response.status == "resolved":
+        action = request.player_action.casefold()
+        if any(marker in action for marker in _EXPLICIT_UNCERTAINTY):
+            raise ValueError(
+                "Игрок явно описал попытку, риск или опасность. Верни status=check; "
+                "не определяй исход и изменения состояния до броска Engine."
+            )
+        response.response = validate_turn(response.response, request=request)
+        return response
+    error = _check_error(response.check.ability, request)
+    if error:
+        raise ValueError(error)
+    return response
+
+
+def validate_check_resolution(
+    response: CheckResolution, *, request: TurnRequest, expected_outcome: str,
+) -> CheckResolution:
+    if response.outcome != expected_outcome:
+        raise ValueError(
+            f"Исход должен совпадать с результатом Engine: {expected_outcome}."
+        )
+    if response.status == "resolved":
+        response.response = validate_turn(response.response, request=request)
+        return response
+    error = _check_error(response.check.ability, request)
+    if error:
+        raise ValueError(error)
     return response

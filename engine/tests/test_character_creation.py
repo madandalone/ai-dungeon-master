@@ -1,7 +1,7 @@
 import unittest
 
 from engine import add_character
-from engine.models import Character, GameState
+from engine.models import ABILITIES, Character, GameState
 
 
 def state() -> GameState:
@@ -22,7 +22,7 @@ def character(character_id="hero", name="Элиас") -> Character:
         concept="Плут",
         hp=10,
         max_hp=10,
-        stats={"ловкость": 3},
+        stats={ability: 10 for ability in ABILITIES},
         inventory=(),
     )
 

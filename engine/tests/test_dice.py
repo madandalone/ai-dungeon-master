@@ -1,7 +1,7 @@
 import random
 import unittest
 
-from engine.dice import Dice, SequenceSource
+from engine.dice import Dice, SequenceSource, SystemRandomSource
 
 
 class DiceTests(unittest.TestCase):
@@ -30,6 +30,10 @@ class DiceTests(unittest.TestCase):
         dice.roll(6)
         with self.assertRaises(RuntimeError):
             dice.roll(6)
+
+    def test_system_random_source_produces_valid_d20_values(self):
+        dice = Dice(SystemRandomSource())
+        self.assertTrue(all(1 <= dice.roll(20) <= 20 for _ in range(100)))
 
 
 if __name__ == "__main__":

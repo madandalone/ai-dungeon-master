@@ -69,7 +69,7 @@ class SkillCheckResolved:
     action_id: str
     sequence: int
     character_id: str
-    stat: str
+    ability: str
     roll: int
     modifier: int
     total: int

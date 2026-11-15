@@ -57,6 +57,12 @@ class SQLiteSessionStore:
                     response_json TEXT NOT NULL,
                     PRIMARY KEY (session_id, action_id)
                 );
+                CREATE TABLE IF NOT EXISTS pending_turns (
+                    session_id TEXT PRIMARY KEY
+                        REFERENCES sessions(id) ON DELETE CASCADE,
+                    action_id TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                );
             """)
 
     @staticmethod
@@ -142,6 +148,7 @@ class SQLiteSessionStore:
         *,
         action_id: str | None = None,
         response: dict[str, Any] | None = None,
+        clear_pending: bool = False,
     ) -> None:
         """Atomically save the new state and one history entry."""
         if state.session_id != session_id:
@@ -204,6 +211,11 @@ class SQLiteSessionStore:
                         json.dumps(response, ensure_ascii=False),
                     ),
                 )
+            if clear_pending:
+                connection.execute(
+                    "DELETE FROM pending_turns WHERE session_id = ?",
+                    (session_id,),
+                )
     def load_processed_turn(
         self,
         session_id: str,
@@ -218,6 +230,38 @@ class SQLiteSessionStore:
             ).fetchone()
 
         return json.loads(row[0]) if row is not None else None
+
+    def load_pending_turn(self, session_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM pending_turns WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return json.loads(row[0]) if row is not None else None
+
+    def save_pending_turn(
+        self, session_id: str, action_id: str, payload: dict[str, Any],
+    ) -> None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT action_id FROM pending_turns WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is not None and row[0] != action_id:
+                raise StateRevisionConflict("Another turn is waiting for a roll")
+            connection.execute(
+                "INSERT INTO pending_turns (session_id, action_id, payload) VALUES (?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET action_id=excluded.action_id, payload=excluded.payload",
+                (session_id, action_id, json.dumps(payload, ensure_ascii=False)),
+            )
+
+    def delete_pending_turn(self, session_id: str, action_id: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM pending_turns WHERE session_id = ? AND action_id = ?",
+                (session_id, action_id),
+            )
+        return cursor.rowcount == 1
 
     def save_state(self, session_id: str, state: GameState) -> None:
         """Persist a state change using optimistic concurrency control."""

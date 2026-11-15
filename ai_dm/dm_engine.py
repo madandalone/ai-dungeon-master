@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import os
 import re
@@ -18,15 +19,24 @@ from ai_dm.errors import ConfigurationError, InvalidResponseError
 from ai_dm.models import (
     CampaignStartRequest,
     CampaignStartResponse,
+    CheckResolution,
+    CheckResult,
     TurnRequest,
+    TurnPlan,
     TurnResponse,
 )
 from ai_dm.provider import RetryPolicy, provider_error, without_sdk_retries
 from ai_dm.prompts import PromptTemplates
 from ai_dm.memory import select_history
-from ai_dm.validation import validate_campaign, validate_turn
+from ai_dm.validation import (
+    validate_campaign,
+    validate_check_resolution,
+    validate_turn,
+    validate_turn_plan,
+)
 
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
+logger = logging.getLogger(__name__)
 
 
 def _create_client() -> OpenAI:
@@ -123,7 +133,17 @@ class AIDungeonMaster:
                 response = client.chat.completions.create(
                     model=model,
                     messages=messages,
-                    temperature=0.8,
+                    # Constrain compatible providers (including Ollama) with the same
+                    # schema that Pydantic validates at the application boundary.
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": response_model.__name__,
+                            "strict": True,
+                            "schema": response_model.model_json_schema(),
+                        },
+                    },
+                    temperature=0.2,
                     max_tokens=limits.max_output_tokens,
                 )
             except (APIError, httpx.HTTPError, TimeoutError, ConnectionError) as exc:
@@ -145,16 +165,21 @@ class AIDungeonMaster:
                     result = validate_response(result)
                 return result
             except ValueError as exc:
+                details = (
+                    json.dumps(
+                        exc.errors(include_input=False, include_url=False),
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                    if isinstance(exc, ValidationError)
+                    else str(exc)
+                )
                 if repair_used or attempt == 2:
+                    logger.debug("invalid AI response model=%s details=%s", model, details)
                     raise InvalidResponseError(
                         "Dungeon Master returned an invalid response after one repair attempt."
                     ) from exc
                 repair_used = True
-                details = (
-                    json.dumps(exc.errors(include_input=False, include_url=False), ensure_ascii=False)
-                    if isinstance(exc, ValidationError)
-                    else str(exc)
-                )
                 repair_messages = []
                 if raw is not None:
                     repair_messages.append({"role": "assistant", "content": raw})
@@ -183,6 +208,58 @@ class AIDungeonMaster:
         return self._generate(
             partial(templates.turn_prompt, request, history), TurnResponse,
             validate_response=partial(validate_turn, request=request),
+            templates=templates, history_count=history.count,
+        )
+
+    def plan_turn(self, request: TurnRequest) -> TurnPlan:
+        """Either resolve a safe action or request one Engine-owned ability check."""
+        templates = PromptTemplates.load()
+        history = select_history(request)
+
+        def prompt(count: int) -> str:
+            base = templates.turn_prompt(request, history, count)
+            return base + (
+                "\n\n### РЕЖИМ ПЛАНИРОВАНИЯ ПРОВЕРКИ:\n"
+                "Если действие безопасно и его исход очевиден, верни status=resolved и response. "
+                "Если есть реальный риск и значимая цена провала, не описывай исход и не меняй "
+                "состояние: верни status=check, одну из шести характеристик, DC из "
+                "[5, 10, 15, 20, 25, 30] и краткую причину. Значение d20 определяет только Engine."
+            )
+
+        return self._generate(
+            prompt, TurnPlan,
+            validate_response=partial(validate_turn_plan, request=request),
+            templates=templates, history_count=history.count,
+        )
+
+    def resolve_check(
+        self, request: TurnRequest, checks: list[CheckResult], *, allow_next: bool,
+    ) -> CheckResolution:
+        """Continue or finish a turn using immutable Engine check results."""
+        templates = PromptTemplates.load()
+        history = select_history(request)
+        expected = "success" if all(check.success for check in checks) else "failure"
+
+        def prompt(count: int) -> str:
+            base = templates.turn_prompt(request, history, count)
+            facts = json.dumps([check.model_dump() for check in checks], ensure_ascii=False)
+            continuation = (
+                "После успеха можно запросить следующую значимую проверку."
+                if allow_next and expected == "success"
+                else "Цепочку продолжать нельзя; верни status=resolved."
+            )
+            return base + (
+                "\n\n### ФАКТЫ ПРОВЕРОК ENGINE:\n" + facts + "\n"
+                "Эти значения окончательны. outcome обязан быть " + expected + ". "
+                + continuation + " При финальном ответе последствия и повествование должны "
+                "соответствовать исходу; провал не описывай как выполненное действие."
+            )
+
+        return self._generate(
+            prompt, CheckResolution,
+            validate_response=partial(
+                validate_check_resolution, request=request, expected_outcome=expected,
+            ),
             templates=templates, history_count=history.count,
         )
 

@@ -10,7 +10,7 @@ from engine.commands import (
     SetWorldFlag,
     SkillCheck,
 )
-from engine.core import apply_action
+from engine.core import ability_modifier, apply_action, resolve_skill_check
 from engine.dice import Dice, SequenceSource
 from engine.events import ActionRejected, HealthChanged, SkillCheckResolved
 from engine.models import Character, GameState, InventoryItem, PlayerAction
@@ -23,7 +23,10 @@ def character(**overrides):
         "concept": "Harbor scout",
         "hp": 10,
         "max_hp": 10,
-        "stats": {"might": 2, "wits": 1},
+        "stats": {
+            "strength": 14, "dexterity": 12, "constitution": 10,
+            "intelligence": 11, "wisdom": 10, "charisma": 10,
+        },
         "inventory": (InventoryItem("lantern", "lantern", 1),),
     }
     data.update(overrides)
@@ -60,6 +63,13 @@ def quiet_dice():
 
 
 class ApplyActionTests(unittest.TestCase):
+    def test_dnd_ability_modifier_uses_floor_for_low_odd_scores(self):
+        self.assertEqual(ability_modifier(1), -5)
+        self.assertEqual(ability_modifier(3), -4)
+        self.assertEqual(ability_modifier(10), 0)
+        self.assertEqual(ability_modifier(12), 1)
+        self.assertEqual(ability_modifier(20), 5)
+
     def test_nested_collections_are_owned_and_immutable(self):
         source_stats = {"might": 2}
         source_flags = {"tide": "low"}
@@ -85,7 +95,7 @@ class ApplyActionTests(unittest.TestCase):
         result = apply_action(
             original,
             action(),
-            [AdjustHealth("ira", -4), AdjustStat("ira", "might", 1)],
+            [AdjustHealth("ira", -4), AdjustStat("ira", "strength", 1)],
             quiet_dice(),
         )
 
@@ -93,7 +103,7 @@ class ApplyActionTests(unittest.TestCase):
         self.assertEqual(result.errors, ())
         self.assertIsNot(result.state, original)
         self.assertEqual(original, before)
-        self.assertEqual(stats["might"], 2)
+        self.assertEqual(stats["strength"], 14)
         self.assertEqual(result.state.revision, 4)
         self.assertEqual(result.state.turn_number, 5)
         self.assertEqual(original.revision, 3)
@@ -182,14 +192,14 @@ class ApplyActionTests(unittest.TestCase):
             action(),
             [
                 SetLocation("warehouse"),
-                AdjustStat("ira", "wits", -1),
+                AdjustStat("ira", "intelligence", -1),
                 SetWorldFlag("gate", True),
             ],
             quiet_dice(),
         )
 
         self.assertEqual(result.state.location_id, "warehouse")
-        self.assertEqual(result.state.characters[0].stats["wits"], 0)
+        self.assertEqual(result.state.characters[0].stats["intelligence"], 10)
         self.assertEqual(result.state.world_flags["gate"], True)
         self.assertEqual(result.state.world_flags["tide"], "low")
         self.assertEqual([type(event).__name__ for event in result.events], [
@@ -203,24 +213,38 @@ class ApplyActionTests(unittest.TestCase):
         success = apply_action(
             state(),
             action(),
-            [SkillCheck("ira", "might", 12)],
+            [SkillCheck("ira", "strength", 10)],
             Dice(success_source),
         )
         failure_source = SequenceSource([10])
         failure = apply_action(
             state(),
             action(),
-            [SkillCheck("ira", "might", 13)],
+            [SkillCheck("ira", "strength", 15)],
             Dice(failure_source),
         )
 
-        self.assertEqual(success.events[0], SkillCheckResolved("action-1", 0, "ira", "might", 10, 2, 12, 12, True))
+        self.assertEqual(success.events[0], SkillCheckResolved("action-1", 0, "ira", "strength", 10, 2, 12, 10, True))
         self.assertFalse(failure.events[0].success)
         self.assertEqual(failure.events[0].modifier, 2)
         self.assertEqual(failure.events[0].total, 12)
         self.assertEqual(success_source.consumed, 1)
-        repeated = apply_action(state(), action(), [SkillCheck("ira", "might", 12)], Dice(SequenceSource([10])))
+        repeated = apply_action(state(), action(), [SkillCheck("ira", "strength", 10)], Dice(SequenceSource([10])))
         self.assertEqual(success, repeated)
+
+    def test_resolved_check_is_reused_without_consuming_another_roll(self):
+        resolved = resolve_skill_check(
+            state(), action(), SkillCheck("ira", "strength", 10),
+            Dice(SequenceSource([9])),
+        )
+        result = apply_action(
+            state(), action(), [AdjustHealth("ira", -1)], quiet_dice(),
+            resolved_checks=[resolved],
+        )
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.events[0], resolved)
+        self.assertIsInstance(result.events[1], HealthChanged)
+        self.assertEqual([event.sequence for event in result.events], [0, 1])
 
     def test_invalid_command_rolls_back_the_whole_turn(self):
         original = state()
@@ -230,7 +254,7 @@ class ApplyActionTests(unittest.TestCase):
             original,
             action(),
             [
-                SkillCheck("ira", "might", 10),
+                SkillCheck("ira", "strength", 10),
                 AdjustHealth("ira", -3),
                 RemoveItem("ira", "lantern", 5),
             ],
