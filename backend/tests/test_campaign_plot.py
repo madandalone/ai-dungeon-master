@@ -1,5 +1,6 @@
 
 import unittest
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -129,7 +130,8 @@ class CampaignPlotTests(unittest.TestCase):
 
         old_db = Path(self.tmp.name) / "old.db"
 
-        with sqlite3.connect(old_db) as connection:
+        # `with sqlite3.connect()` only commits; close explicitly or Windows keeps the file locked.
+        with closing(sqlite3.connect(old_db)) as connection, connection:
             connection.execute(
                 "CREATE TABLE sessions ("
                 "id TEXT PRIMARY KEY, "
@@ -146,7 +148,8 @@ class CampaignPlotTests(unittest.TestCase):
                 ).fetchall()
             }
 
-        self.assertIn("hidden_plot", columns)
+        for column in ("hidden_plot", "room_context", "campaign_title", "campaign_started"):
+            self.assertIn(column, columns)
 
 
 if __name__ == "__main__":

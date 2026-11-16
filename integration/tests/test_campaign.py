@@ -130,3 +130,31 @@ class CampaignLogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OrchestratorCampaignTests(unittest.TestCase):
+    def orchestrator(self, dm):
+        from integration import TurnOrchestrator
+
+        class Rules:
+            def get_rules(self, query):
+                return ""
+
+        return TurnOrchestrator(dm, Rules())
+
+    def test_a_campaign_capable_dm_is_detected_and_used(self):
+        orchestrator = self.orchestrator(FakeCampaignDM())
+        self.assertTrue(orchestrator.can_start_campaign)
+        result = orchestrator.start_campaign(state(), "Склеп", Dice(SequenceSource([10])))
+        self.assertEqual(result.campaign.hidden_plot, PLOT)
+        self.assertEqual(result.state.location_id, "Затопленный склеп")
+
+    def test_a_dm_without_the_ability_is_reported_and_refused(self):
+        class TurnsOnly:
+            def process_turn(self, request):
+                raise AssertionError("not used")
+
+        orchestrator = self.orchestrator(TurnsOnly())
+        self.assertFalse(orchestrator.can_start_campaign)
+        with self.assertRaises(ValueError):
+            orchestrator.start_campaign(state(), "Склеп", Dice(SequenceSource([10])))
