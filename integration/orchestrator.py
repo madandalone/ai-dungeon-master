@@ -15,6 +15,7 @@ from ai_dm.models import (
 from engine import apply_action
 from engine.dice import Dice
 from engine.models import EngineError, GameState, PlayerAction
+from integration.campaign import CampaignStart, begin_campaign
 from integration.errors import DungeonMasterError, UnmappableResponse, dungeon_master_error
 from integration.mapping import to_commands, to_dm_state
 from integration.ports import DungeonMaster, RulesProvider
@@ -59,6 +60,17 @@ class TurnOrchestrator:
     def __init__(self, dm: DungeonMaster, rules: RulesProvider):
         self._dm = dm
         self._rules = rules
+
+    @property
+    def can_start_campaign(self) -> bool:
+        """True when the DM can invent a campaign (stub DMs used in tests and demos usually cannot)."""
+        return callable(getattr(self._dm, "generate_campaign_start", None))
+
+    def start_campaign(self, state: GameState, theme: str, dice: Dice, monster: str = "goblin") -> CampaignStart:
+        """Create the hidden plot for this party and move it into the opening scene (see integration.campaign)."""
+        if not self.can_start_campaign:
+            raise ValueError("This Dungeon Master cannot start a campaign")
+        return begin_campaign(self._dm, state, theme, dice, monster)
 
     def play_turn(
         self,

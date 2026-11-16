@@ -75,6 +75,15 @@ class SQLiteSessionStore:
                     "ALTER TABLE sessions "
                     "ADD COLUMN hidden_plot TEXT NOT NULL DEFAULT 'Test campaign'"
                 )
+            for column, definition in (
+                ("room_context", "TEXT NOT NULL DEFAULT ''"),
+                ("campaign_title", "TEXT NOT NULL DEFAULT ''"),
+                ("campaign_started", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if column not in columns:
+                    connection.execute(
+                        f"ALTER TABLE sessions ADD COLUMN {column} {definition}"
+                    )
 
     @staticmethod
     def _state_to_json(state: GameState) -> str:
@@ -171,6 +180,70 @@ class SQLiteSessionStore:
             ).fetchone()
 
         return row[0] if row is not None else None
+    def load_campaign(self, session_id: str) -> dict[str, Any] | None:
+        """Return the private campaign record, or None for an unknown session."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT campaign_started, campaign_title, hidden_plot, room_context "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "started": bool(row[0]),
+            "title": row[1],
+            "hidden_plot": row[2],
+            "room_context": row[3],
+        }
+
+    def save_campaign(
+        self,
+        session_id: str,
+        state: GameState,
+        entry: TurnHistoryEntry,
+        *,
+        title: str,
+        hidden_plot: str,
+        room_context: str,
+    ) -> None:
+        """Atomically store the campaign, the opening state and the intro history entry."""
+        if state.session_id != session_id:
+            raise ValueError("Session ID does not match state")
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE game_states SET payload = ? "
+                "WHERE session_id = ? "
+                "AND json_extract(payload, '$.revision') = ?",
+                (self._state_to_json(state), session_id, state.revision - 1),
+            )
+            if cursor.rowcount != 1:
+                raise StateRevisionConflict("Unexpected state revision")
+            connection.execute(
+                "UPDATE sessions SET campaign_started = 1, campaign_title = ?, "
+                "hidden_plot = ?, room_context = ? WHERE id = ?",
+                (title, hidden_plot, room_context, session_id),
+            )
+            position = connection.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 "
+                "FROM game_histories WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+            connection.execute(
+                "INSERT INTO game_histories "
+                "(session_id, position, payload) VALUES (?, ?, ?)",
+                (
+                    session_id,
+                    position,
+                    json.dumps({
+                        "character_id": entry.character_id,
+                        "player_action": entry.player_action,
+                        "narrative": entry.narrative,
+                        "dm_notes": entry.dm_notes,
+                    }, ensure_ascii=False),
+                ),
+            )
+
     def save_turn(
         self,
         session_id: str,

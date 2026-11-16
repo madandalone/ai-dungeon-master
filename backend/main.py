@@ -60,10 +60,19 @@ app.add_middleware(
 )
 
 
+DEFAULT_PLOT = "Test campaign"
+DEFAULT_THEME = "Приключение в фэнтезийном мире"
+
+
+class CampaignRequest(BaseModel):
+    theme: str = Field(default=DEFAULT_THEME, min_length=1, max_length=300)
+    monster: str = Field(default="goblin", min_length=1, max_length=60)
+
+
 class GameSessionCreate(BaseModel):
     name: str
     hidden_plot: str = Field(
-        default="Test campaign",
+        default=DEFAULT_PLOT,
         min_length=1,
         max_length=20000,
     )
@@ -406,11 +415,12 @@ def public_state(
 
     if include_history:
         for entry in history:
-            log.append({
-                "kind": "player",
-                "character_id": entry.character_id,
-                "text": entry.player_action,
-            })
+            if entry.player_action.strip():
+                log.append({
+                    "kind": "player",
+                    "character_id": entry.character_id,
+                    "text": entry.player_action,
+                })
 
             if entry.narrative.strip():
                 log.append({
@@ -432,6 +442,83 @@ def public_state(
     )
 
     return public
+
+
+def _start_campaign_locked(
+    session_id: str,
+    orchestrator: TurnOrchestrator,
+    theme: str,
+    monster: str,
+) -> tuple[bool, dict]:
+    """Give the session a DM-written plot unless it already has one. Call under the session lock."""
+    ensure_session_loaded(session_id)
+    store = get_session_store()
+    record = store.load_campaign(session_id)
+    if record["started"]:
+        return False, {"title": record["title"]}
+
+    try:
+        started = orchestrator.start_campaign(
+            game_states[session_id],
+            theme,
+            Dice(SystemRandomSource()),
+            monster,
+        )
+    except IntegrationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    campaign = started.campaign
+    entry = TurnHistoryEntry(
+        player_action="",
+        narrative=campaign.intro_narrative,
+        dm_notes=f"Начало кампании: {campaign.title}",
+    )
+    store.save_campaign(
+        session_id,
+        started.state,
+        entry,
+        title=campaign.title,
+        hidden_plot=campaign.hidden_plot,
+        room_context=campaign.room_context,
+    )
+    game_states[session_id] = started.state
+    game_histories[session_id].append(entry)
+    return True, {"title": campaign.title, "intro": campaign.intro_narrative}
+
+
+@app.post("/sessions/{session_id}/campaign")
+def start_campaign(
+    session_id: str,
+    body: CampaignRequest = CampaignRequest(),
+    orchestrator: TurnOrchestrator = Depends(get_orchestrator),
+):
+    """Let the Dungeon Master write the hidden plot for the session's current heroes.
+
+    Safe to repeat: a session that already has a campaign answers `created: false`.
+    The plot itself never leaves the server.
+    """
+    if not orchestrator.can_start_campaign:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CAMPAIGN_UNAVAILABLE",
+                "message": "The configured Dungeon Master cannot write campaigns.",
+            },
+        )
+
+    def execute_campaign():
+        created, summary = _start_campaign_locked(
+            session_id, orchestrator, body.theme, body.monster
+        )
+        return {"created": created, **summary, "state": public_state(session_id)}
+
+    response, _ = turn_executor.run(
+        session_id,
+        f"campaign:{session_id}",
+        execute_campaign,
+        remember=lambda result: False,
+    )
+    return response
 
 
 @app.get("/sessions/{session_id}/state")
@@ -620,6 +707,22 @@ def process_turn(
                 game_states[session_id],
             )
 
+        campaign = store.load_campaign(session_id)
+        expected_revision = turn_data.expected_revision
+        if (
+            orchestrator.can_start_campaign
+            and not campaign["started"]
+            and campaign["hidden_plot"] == DEFAULT_PLOT
+        ):
+            # First turn of a new game: the DM writes the plot for the heroes that exist now.
+            revision_before = game_states[session_id].revision
+            _start_campaign_locked(
+                session_id, orchestrator, DEFAULT_THEME, "goblin"
+            )
+            campaign = store.load_campaign(session_id)
+            if expected_revision == revision_before:
+                expected_revision = game_states[session_id].revision
+
         state = game_states[session_id]
 
         action = make_player_action(
@@ -627,16 +730,16 @@ def process_turn(
             character_id=turn_data.character_id,
             text=turn_data.text,
             action_id=action_id,
-            expected_revision=turn_data.expected_revision,
+            expected_revision=expected_revision,
         )
 
         try:
             planned = orchestrator.plan_turn(
                 state=state,
                 action=action,
-                hidden_plot=store.load_hidden_plot(session_id)
-                or "Test campaign",
+                hidden_plot=campaign["hidden_plot"],
                 dice=Dice(SystemRandomSource()),
+                room_context=campaign["room_context"],
                 history=game_histories[session_id],
             )
         except IntegrationError as exc:
