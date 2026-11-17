@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import backend.main as backend
 from backend.storage import SQLiteSessionStore
 from integration.factory import build_orchestrator
+from backend.tests.helpers import create_hero
 
 
 class TestPersistenceAPI(unittest.TestCase):
@@ -40,18 +41,22 @@ class TestPersistenceAPI(unittest.TestCase):
 
         self.client = TestClient(backend.app)
         self.addCleanup(self.client.close)
-    def test_duplicate_turn_not_applied_twice(self):
-        response = self.client.post(
-            "/sessions", json={"name": "Duplicate Test"}
-        )
+
+    def create_session_with_hero(self, name):
+        response = self.client.post("/sessions", json={"name": name})
         self.assertEqual(response.status_code, 200)
         session_id = response.json()["id"]
+        hero = create_hero(self.client, session_id)
+        return session_id, hero["id"]
+
+    def test_duplicate_turn_not_applied_twice(self):
+        session_id, character_id = self.create_session_with_hero("Duplicate Test")
 
         payload = {
-            "character_id": "hero",
+            "character_id": character_id,
             "text": "Я открываю дверь",
             "action_id": "duplicate-action-1",
-            "expected_revision": 0,
+            "expected_revision": 1,
         }
 
         first = self.client.post(
@@ -70,19 +75,15 @@ class TestPersistenceAPI(unittest.TestCase):
         self.assertIsNotNone(restored)
         _, state, history = restored
 
-        self.assertEqual(state.revision, 1)
+        self.assertEqual(state.revision, 2)
         self.assertEqual(state.characters[0].hp, 9)
         self.assertEqual(len(history), 1)
     def test_turn_survives_restart(self):
-        response = self.client.post(
-            "/sessions", json={"name": "Persistence Test"}
-        )
-        self.assertEqual(response.status_code, 200)
-        session_id = response.json()["id"]
+        session_id, character_id = self.create_session_with_hero("Persistence Test")
 
         response = self.client.post(
             f"/sessions/{session_id}/turns",
-            json={"character_id": "hero", "text": "Я открываю дверь"},
+            json={"character_id": character_id, "text": "Я открываю дверь"},
         )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["accepted"])
@@ -108,7 +109,7 @@ class TestPersistenceAPI(unittest.TestCase):
         self.assertIsNotNone(restored)
 
         _, state, history = restored
-        self.assertEqual(state.revision, 1)
+        self.assertEqual(state.revision, 2)
         self.assertEqual(state.characters[0].hp, 9)
         self.assertEqual(len(history), 1)
         self.assertEqual(
@@ -117,17 +118,13 @@ class TestPersistenceAPI(unittest.TestCase):
     def test_concurrent_actions(self):
         from concurrent.futures import ThreadPoolExecutor
 
-        response = self.client.post(
-            "/sessions", json={"name": "Concurrent Test"}
-        )
-        self.assertEqual(response.status_code, 200)
-        session_id = response.json()["id"]
+        session_id, character_id = self.create_session_with_hero("Concurrent Test")
 
         def send_action(index):
             return self.client.post(
                 f"/sessions/{session_id}/actions",
                 json={
-                    "character_id": "hero",
+                    "character_id": character_id,
                     "text": f"Action {index}",
                     "health_delta": -1,
                 },
@@ -144,16 +141,13 @@ class TestPersistenceAPI(unittest.TestCase):
         self.assertIsNotNone(restored)
 
         _, state, _ = restored
-        self.assertEqual(state.revision, 5)
+        self.assertEqual(state.revision, 6)
         self.assertEqual(state.characters[0].hp, 5)
     def test_duplicate_turn_survives_restart(self):
-        session_id = self.client.post(
-            "/sessions",
-            json={"name": "Idempotency test"},
-        ).json()["id"]
+        session_id, character_id = self.create_session_with_hero("Idempotency test")
 
         payload = {
-            "character_id": "hero",
+            "character_id": character_id,
             "text": "Я открываю дверь",
             "action_id": "persistent-turn-123",
         }
@@ -198,13 +192,10 @@ class TestPersistenceAPI(unittest.TestCase):
         from unittest.mock import patch
         from backend.storage import StateRevisionConflict
 
-        session_id = self.client.post(
-            "/sessions",
-            json={"name": "Conflict test"},
-        ).json()["id"]
+        session_id, character_id = self.create_session_with_hero("Conflict test")
 
         payload = {
-            "character_id": "hero",
+            "character_id": character_id,
             "text": "Я открываю дверь",
             "action_id": "conflicting-turn-123",
         }

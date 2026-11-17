@@ -48,6 +48,7 @@ def apply_action(
     commands: tuple[object, ...] | list[object],
     dice: Dice,
     resolved_checks: tuple[SkillCheckResolved, ...] | list[SkillCheckResolved] = (),
+    declared_outcome: str | None = None,
 ) -> EngineResult:
     """Validate one player action and apply its commands atomically.
 
@@ -62,6 +63,18 @@ def apply_action(
     check_error = _resolved_checks_error(state, action, resolved_checks)
     if check_error is not None:
         return _reject(state, action, (check_error,))
+
+    if resolved_checks:
+        canonical_outcome = "success" if all(check.success for check in resolved_checks) else "failure"
+        if declared_outcome is not None and declared_outcome != canonical_outcome:
+            return _reject(
+                state,
+                action,
+                (EngineError(
+                    "INVALID_CHECK_OUTCOME",
+                    "Declared outcome does not match the Engine skill-check result.",
+                ),),
+            )
 
     preview = state
     for index, command in enumerate(commands):

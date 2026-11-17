@@ -36,3 +36,11 @@ export function healthPercent(current, maximum) {
   if (!Number.isFinite(safeMaximum) || safeMaximum <= 0) return 0;
   return Math.max(0, Math.min(100, (Number(current) / safeMaximum) * 100));
 }
+
+export function orderCharactersByActive(characters = [], activeCharacterId = "") {
+  return [...characters].sort((left, right) => {
+    if (left.id === activeCharacterId) return -1;
+    if (right.id === activeCharacterId) return 1;
+    return 0;
+  });
+}

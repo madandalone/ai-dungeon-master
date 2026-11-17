@@ -1,22 +1,24 @@
 import {
   ApiError, cancelTurn, createCharacter, createSession, fetchHealth, fetchSessionState,
   rollTurn, submitTurn,
-} from "./api.js";
-import { SETTINGS_KEY, applyTranslations, getLanguage, initLanguage, setLanguage, t } from "./i18n.js";
+} from "./api.js?v=20261117-2";
+import { SETTINGS_KEY, applyTranslations, getLanguage, initLanguage, setLanguage, t } from "./i18n.js?v=20261117-2";
 import {
   activateSession, activePublicState, emptyPublicState, loadSessionStore, putSession, saveSessionStore,
 } from "./state.js";
-import { characterArchetype, healthPercent, healthTone, iconMarkup } from "./visuals.js";
+import { characterArchetype, healthPercent, healthTone, iconMarkup, orderCharactersByActive } from "./visuals.js?v=20261117-1";
+import { createDiceView } from "./dice-view.js?v=20261117-2";
 import {
   applyTurnResult,
   createTurnAttempt,
   failureMessageKey,
   mergeServerState,
+  replaceServerState,
   pinnedContext,
   stateChanges,
   turnReceipts,
   warningMessageKey,
-} from "./turns.js";
+} from "./turns.js?v=20261117-2";
 
 const elements = {
   shell: document.querySelector("#app-shell"),
@@ -26,14 +28,19 @@ const elements = {
   sidebarBackdrop: document.querySelector("#sidebar-backdrop"),
   sectionTitle: document.querySelector("#section-title"),
   sectionDescription: document.querySelector("#section-description"),
-  hudSession: document.querySelector("#hud-session"),
+  headerSessionName: document.querySelector("#header-session-name"),
+  copySessionId: document.querySelector("#copy-session-id"),
+  copyFeedback: document.querySelector("#copy-feedback"),
   hudHero: document.querySelector("#hud-hero"),
   hudHeroHp: document.querySelector("#hud-hero-hp"),
   hudEvent: document.querySelector("#hud-event"),
+  hudEventToggle: document.querySelector("#hud-event-toggle"),
+  hudExpand: document.querySelector("#hud-expand"),
   offlineBanner: document.querySelector("#offline-banner"),
   globalRetry: document.querySelector("#global-retry"),
   serverMini: document.querySelector("#server-mini"),
   serverMiniText: document.querySelector("#server-mini-text"),
+  languageCompact: document.querySelector("#language-compact"),
   connectionState: document.querySelector("#connection-state"),
   healthStatus: document.querySelector("#health-status"),
   healthDescription: document.querySelector("#health-description"),
@@ -44,7 +51,6 @@ const elements = {
   joinSessionId: document.querySelector("#join-session-id"),
   sessionResult: document.querySelector("#session-result"),
   sessionList: document.querySelector("#session-list"),
-  serviceGrid: document.querySelector("#service-grid"),
   characterForm: document.querySelector("#character-form"),
   characterName: document.querySelector("#character-name"),
   characterConcept: document.querySelector("#character-concept"),
@@ -64,7 +70,6 @@ const elements = {
   actionStatus: document.querySelector("#action-status"),
   log: document.querySelector("#log"),
   turnBadge: document.querySelector("#turn-badge"),
-  revisionBadge: document.querySelector("#revision-badge"),
   syncSession: document.querySelector("#sync-session"),
   syncStatus: document.querySelector("#sync-status"),
   turnReceipt: document.querySelector("#turn-receipt"),
@@ -91,6 +96,14 @@ const elements = {
   worldParty: document.querySelector("#world-party"),
 };
 
+const diceView = createDiceView({
+  overlay: elements.diceOverlay,
+  title: elements.diceTitle,
+  d20: elements.d20,
+  value: elements.d20Value,
+  formula: elements.diceFormula,
+}, t);
+
 function readUiSettings() {
   try {
     return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {};
@@ -114,7 +127,9 @@ let turnPending = false;
 let syncPending = false;
 let pendingTurnAttempt = null;
 let actionFeedback = null;
-let componentStates = { backend: "checking", dm: "unknown", rules: "unknown", history: "unknown" };
+let hudEventExpanded = false;
+let copyFeedbackKey = "";
+let copyFeedbackTimer = null;
 const syncTimes = new Map();
 const receiptsBySession = new Map();
 const ABILITY_KEYS = new Set([
@@ -179,29 +194,35 @@ function renderBackend() {
   const key = checking ? "checking" : online ? "online" : "offline";
   elements.serverMini.dataset.state = key;
   elements.serverMiniText.textContent = t(`backend.${key}`);
+  elements.serverMini.title = t(`backend.${key}`);
+  elements.serverMini.setAttribute("aria-label", t(`backend.${key}`));
   elements.connectionState.dataset.state = key;
   elements.healthStatus.textContent = t(`backend.${key}`);
   elements.healthDescription.textContent = t(`backend.${key}Body`);
   elements.offlineBanner.hidden = checking || online;
 }
 
-function renderServices() {
-  elements.serviceGrid.querySelectorAll("[data-service]").forEach((card) => {
-    const state = componentStates[card.dataset.service] || "unknown";
-    card.dataset.state = state;
-    card.querySelector(".service-state").textContent = t(`services.status.${state}`);
-  });
+function renderSessionContext() {
+  const state = currentState();
+  elements.headerSessionName.textContent = state?.session_name || (state ? t("session.untitled") : t("session.none"));
+  elements.headerSessionName.title = state?.session_name || "";
+  elements.copySessionId.disabled = !state?.session_id;
+  elements.copySessionId.title = state?.session_id || "";
+  elements.copyFeedback.textContent = copyFeedbackKey ? t(copyFeedbackKey) : "";
 }
 
 function renderPinnedContext() {
   const state = currentState();
   const context = pinnedContext(state, selectedCharacterId);
-  elements.hudSession.textContent = context.sessionName || (state ? t("session.untitled") : t("session.none"));
   elements.hudHero.textContent = context.hero?.name || t("context.noHero");
   elements.hudHeroHp.textContent = context.hero ? `♥ ${context.hero.hp}/${context.hero.max_hp}` : "";
+  elements.hudEventToggle.classList.toggle("is-expanded", hudEventExpanded);
+  elements.hudEventToggle.setAttribute("aria-expanded", String(hudEventExpanded));
+  elements.hudExpand.textContent = t(hudEventExpanded ? "context.collapse" : "context.expand");
   if (!context.lastEvent) {
     elements.hudEvent.textContent = t("context.noEvent");
     elements.hudEvent.removeAttribute("title");
+    elements.hudExpand.hidden = true;
     return;
   }
   const speaker = context.lastEvent.kind === "master"
@@ -210,6 +231,14 @@ function renderPinnedContext() {
   const summary = t("context.event", { speaker, text: context.lastEvent.text });
   elements.hudEvent.textContent = summary;
   elements.hudEvent.title = summary;
+  elements.hudExpand.hidden = true;
+  globalThis.requestAnimationFrame?.(() => {
+    if (hudEventExpanded) {
+      elements.hudExpand.hidden = false;
+      return;
+    }
+    elements.hudExpand.hidden = elements.hudEvent.scrollHeight <= elements.hudEvent.clientHeight + 1;
+  });
 }
 
 function renderControls() {
@@ -291,12 +320,35 @@ function healthWidget(character) {
   return widget;
 }
 
-function characterCard(character, compact = false) {
+function selectPartyHero(characterId) {
+  if (turnPending || currentState()?.pending_turn) return;
+  selectedCharacterId = characterId;
+  elements.actingCharacter.value = characterId;
+  renderCharacters();
+  renderPinnedContext();
+}
+
+function characterCard(character, { compact = false, party = false, active = false } = {}) {
   const archetype = characterArchetype(character.concept);
   const card = document.createElement("article");
   card.className = "character-card";
   card.dataset.archetype = archetype;
   card.dataset.characterId = character.id;
+  if (party) {
+    card.classList.add("party-character-card");
+    card.classList.toggle("is-active", active);
+    card.tabIndex = turnPending || currentState()?.pending_turn ? -1 : 0;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-pressed", String(active));
+    card.setAttribute("aria-label", t(active ? "game.activeHeroLabel" : "game.selectHero", { name: character.name }));
+    const activate = () => selectPartyHero(character.id);
+    card.addEventListener("click", activate);
+    card.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      activate();
+    });
+  }
 
   const icon = document.createElement("div");
   icon.className = compact ? "mini-icon" : "character-icon";
@@ -315,7 +367,7 @@ function characterCard(character, compact = false) {
 
   if (!compact) {
     const stats = document.createElement("ul");
-    stats.className = "stat-chips";
+    stats.className = party ? "stat-chips party-stats" : "stat-chips";
     const entries = Object.entries(character.stats);
     if (!entries.length) {
       const item = document.createElement("li");
@@ -326,7 +378,13 @@ function characterCard(character, compact = false) {
     entries.forEach(([stat, value]) => {
       const item = document.createElement("li");
       item.className = "stat-chip";
-      item.textContent = `${ABILITY_KEYS.has(stat) ? abilityLabel(stat) : stat}: ${value}`;
+      const label = ABILITY_KEYS.has(stat)
+        ? t(party ? `ability.short.${stat}` : `ability.${stat}`)
+        : stat;
+      const fullLabel = ABILITY_KEYS.has(stat) ? abilityLabel(stat) : stat;
+      item.textContent = `${label} ${value}`;
+      item.title = `${fullLabel}: ${value}`;
+      item.setAttribute("aria-label", `${fullLabel}: ${value}`);
       stats.append(item);
     });
 
@@ -388,14 +446,19 @@ function renderCharacters() {
 
 function renderActiveHero() {
   elements.activeHero.replaceChildren();
-  const hero = currentState()?.characters.find((character) => character.id === selectedCharacterId);
-  if (!hero) {
+  const characters = currentState()?.characters || [];
+  if (!characters.length) {
     elements.activeHero.append(emptyMessage(t("game.noCharacters")));
     return;
   }
   const wrapper = document.createElement("div");
-  wrapper.className = "hero-focus";
-  wrapper.append(characterCard(hero));
+  wrapper.className = "hero-focus party-list";
+  orderCharactersByActive(characters, selectedCharacterId).forEach((character) => {
+    wrapper.append(characterCard(character, {
+      party: true,
+      active: character.id === selectedCharacterId,
+    }));
+  });
   elements.activeHero.append(wrapper);
 }
 
@@ -403,10 +466,8 @@ function renderLog() {
   const state = currentState();
   const log = state?.log || [];
   const turnNumber = state?.turn_number || 0;
-  elements.turnBadge.textContent = String(turnNumber);
+  elements.turnBadge.textContent = t("game.turns", { count: turnNumber });
   elements.turnBadge.setAttribute("aria-label", t("game.turns", { count: turnNumber }));
-  elements.revisionBadge.textContent = state ? `R${state.revision}` : "R—";
-  elements.revisionBadge.setAttribute("aria-label", t("game.revision", { count: state?.revision ?? 0 }));
   elements.log.replaceChildren();
   if (!log.length) {
     elements.log.append(emptyMessage(t("game.noLog")));
@@ -589,8 +650,51 @@ function connectionLabel(connection) {
   return t(connection === "server" ? "session.server" : connection === "legacy" ? "session.legacyStatus" : "session.unverified");
 }
 
+async function copyText(value) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.append(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  input.remove();
+  if (!copied) throw new Error("copy_failed");
+}
+
+function showCopyFeedback(key) {
+  copyFeedbackKey = key;
+  renderSessionContext();
+  if (copyFeedbackTimer !== null) globalThis.clearTimeout(copyFeedbackTimer);
+  copyFeedbackTimer = globalThis.setTimeout(() => {
+    copyFeedbackKey = "";
+    renderSessionContext();
+  }, 1800);
+}
+
+async function copySessionIdentifier(sessionId, button = null) {
+  try {
+    await copyText(sessionId);
+    showCopyFeedback("session.copied");
+    if (button) {
+      button.textContent = t("session.copied");
+      button.disabled = true;
+      globalThis.setTimeout(() => {
+        button.textContent = t("session.copyId");
+        button.disabled = false;
+      }, 1800);
+    }
+  } catch {
+    showCopyFeedback("session.copyError");
+  }
+}
+
 function renderSessions() {
-  const state = currentState();
   elements.sessionList.replaceChildren();
   const sessions = Object.values(store.sessions);
   if (!sessions.length) {
@@ -609,7 +713,27 @@ function renderSessions() {
 
     const status = document.createElement("span");
     status.textContent = connectionLabel(session.connection);
-    text.append(title, status);
+    const identifier = document.createElement("code");
+    identifier.className = "session-id";
+    identifier.textContent = session.session_id;
+    identifier.title = session.session_id;
+    text.append(title, status, identifier);
+
+    if (session.session_id === store.activeSessionId) {
+      const active = document.createElement("span");
+      active.className = "active-session-badge";
+      active.textContent = t("session.activeBadge");
+      text.prepend(active);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "session-actions";
+
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "text-button copy-card-button";
+    copyButton.textContent = t("session.copyId");
+    copyButton.addEventListener("click", () => copySessionIdentifier(session.session_id, copyButton));
 
     const button = document.createElement("button");
     button.type = "button";
@@ -625,10 +749,15 @@ function renderSessions() {
       persistStore();
       renderAll();
       if (canReachBackend() && session.connection === "server") {
-        await refreshSession(session.session_id, session.session_name);
+        const loaded = await refreshSession(session.session_id, session.session_name);
+        if (loaded) {
+          currentSection = currentState()?.characters.length ? "game" : "characters";
+          renderAll();
+        }
       }
     });
-    item.append(text, button);
+    actions.append(copyButton, button);
+    item.append(text, actions);
     elements.sessionList.append(item);
   });
 }
@@ -640,9 +769,10 @@ function renderAll() {
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-pressed", String(active));
   });
+  elements.languageCompact.textContent = getLanguage().toUpperCase();
   switchSection(currentSection);
   renderBackend();
-  renderServices();
+  renderSessionContext();
   renderSessions();
   renderCharacters();
   renderPinnedContext();
@@ -664,68 +794,6 @@ function readStats() {
   return stats;
 }
 
-const PIXEL_DIGITS = {
-  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
-  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
-  "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
-  "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
-  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
-  "5": ["11111", "10000", "10000", "11110", "00001", "00001", "11110"],
-  "6": ["01110", "10000", "10000", "11110", "10001", "10001", "01110"],
-  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
-  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
-  "9": ["01110", "10001", "10001", "01111", "00001", "00001", "01110"],
-  "?": ["01110", "10001", "00001", "00010", "00100", "00000", "00100"],
-};
-
-function renderDiceValue(value) {
-  const text = String(value);
-  const digits = [...text].map((character) => {
-    const digit = document.createElement("span");
-    digit.className = "pixel-digit";
-    (PIXEL_DIGITS[character] || PIXEL_DIGITS["?"]).join("").split("").forEach((bit) => {
-      const pixel = document.createElement("span");
-      pixel.className = `pixel-cell${bit === "1" ? " is-lit" : ""}`;
-      digit.append(pixel);
-    });
-    return digit;
-  });
-  elements.d20Value.setAttribute("aria-label", text);
-  elements.d20Value.replaceChildren(...digits);
-}
-
-let diceTicker = null;
-
-function startDiceAnimation() {
-  const reduced = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-  elements.diceOverlay.hidden = false;
-  elements.diceFormula.textContent = t("check.waitingForMaster");
-  elements.diceTitle.textContent = t("check.rolling");
-  elements.d20.className = `d20${reduced ? "" : " is-rolling"}`;
-  renderDiceValue("?");
-  if (!reduced) {
-    diceTicker = globalThis.setInterval(() => {
-      renderDiceValue(1 + Math.floor(Math.random() * 20));
-    }, 90);
-  }
-}
-
-function stopDiceAnimation() {
-  if (diceTicker !== null) globalThis.clearInterval(diceTicker);
-  diceTicker = null;
-}
-
-async function settleDiceAnimation(check) {
-  stopDiceAnimation();
-  renderDiceValue(check.roll);
-  elements.d20.className = `d20 is-settling ${check.success ? "is-success" : "is-failure"}`;
-  elements.diceTitle.textContent = t(check.success ? "check.success" : "check.failure");
-  elements.diceFormula.textContent = `${check.roll} ${signedModifier(check.modifier)} = ${check.total} vs DC ${check.difficulty}`;
-  await new Promise((resolve) => globalThis.setTimeout(resolve, 850));
-  elements.diceOverlay.hidden = true;
-  elements.d20.className = "d20";
-}
-
 function latestCheck(result, sequence) {
   const checks = result.status === "awaiting_roll"
     ? result.pending_turn.resolved_checks
@@ -744,7 +812,7 @@ async function refreshSession(sessionId, fallbackName = "", announceError = fals
   try {
     const snapshot = await fetchSessionState(sessionId);
     const previous = store.sessions[sessionId];
-    const merged = mergeServerState(previous, snapshot);
+    const merged = replaceServerState(snapshot);
     store = putSession(store, {
       ...merged,
       session_name: merged.session_name || fallbackName || previous?.session_name || "",
@@ -758,7 +826,6 @@ async function refreshSession(sessionId, fallbackName = "", announceError = fals
   } catch (error) {
     if (error instanceof ApiError && error.code === "network_error") {
       backendState = "offline";
-      componentStates = { ...componentStates, backend: "offline" };
     }
     if (announceError) elements.sessionResult.textContent = t(sessionErrorKey(error));
     renderAll();
@@ -783,10 +850,8 @@ function playStateChanges(changes) {
 
 async function checkHealth() {
   backendState = "checking";
-  componentStates = { ...componentStates, backend: "checking" };
-  renderBackend(); renderServices(); renderControls();
+  renderBackend(); renderControls();
   const result = await fetchHealth(); backendState = result.available ? "online" : "offline";
-  componentStates = result.components;
   const state = currentState();
   if (result.available && state?.connection === "server") {
     await refreshSession(state.session_id, state.session_name);
@@ -801,6 +866,19 @@ document.querySelectorAll("[data-language]").forEach((button) => {
     setLanguage(button.dataset.language);
     renderAll();
   });
+});
+elements.languageCompact.addEventListener("click", () => {
+  setLanguage(getLanguage() === "ru" ? "en" : "ru");
+  renderAll();
+});
+elements.hudEventToggle.addEventListener("click", () => {
+  if (elements.hudExpand.hidden) return;
+  hudEventExpanded = !hudEventExpanded;
+  renderPinnedContext();
+});
+elements.copySessionId.addEventListener("click", () => {
+  const sessionId = currentState()?.session_id;
+  if (sessionId) copySessionIdentifier(sessionId);
 });
 
 elements.sidebarToggle.addEventListener("click", () => {
@@ -819,6 +897,7 @@ elements.sidebarBackdrop.addEventListener("click", () => {
   elements.mobileMenu.setAttribute("aria-expanded", "false");
 });
 elements.recheckHealth.addEventListener("click", checkHealth);
+elements.serverMini.addEventListener("click", checkHealth);
 elements.globalRetry.addEventListener("click", checkHealth);
 elements.syncSession.addEventListener("click", async () => {
   const state = currentState();
@@ -855,12 +934,11 @@ elements.createSessionForm.addEventListener("submit", async (event) => {
     if (!loaded) return;
     elements.sessionResult.textContent = t("session.created", { name: session.name });
     elements.createSessionForm.reset();
-    currentSection = "game";
+    currentSection = "characters";
     renderAll();
   } catch (error) {
     if (error instanceof ApiError && error.code === "network_error") {
       backendState = "offline";
-      componentStates = { ...componentStates, backend: "offline" };
     }
     elements.sessionResult.textContent = t(sessionErrorKey(error));
     renderAll();
@@ -881,7 +959,7 @@ elements.joinSessionForm.addEventListener("submit", async (event) => {
   pendingTurnAttempt = null;
   elements.sessionResult.textContent = t("session.joined");
   elements.joinSessionForm.reset();
-  currentSection = "game";
+  currentSection = currentState()?.characters.length ? "game" : "characters";
   renderAll();
 });
 
@@ -919,7 +997,6 @@ elements.characterForm.addEventListener("submit", async (event) => {
   } catch (error) {
     if (error instanceof ApiError && error.code === "network_error") {
       backendState = "offline";
-      componentStates = { ...componentStates, backend: "offline" };
     }
     if (error instanceof ApiError && error.code === "stale_revision") {
       await refreshSession(state.session_id, state.session_name);
@@ -945,13 +1022,13 @@ elements.rollD20.addEventListener("click", async () => {
   if (!pending || turnPending) return;
   turnPending = true;
   actionFeedback = { kind: "pending", key: "check.waitingForMaster" };
-  startDiceAnimation();
+  diceView.start();
   renderControls();
   try {
-    const result = await rollTurn(state.session_id, pending.action_id);
+    const result = await rollTurn(state.session_id, pending.action_id, pending.sequence);
     const check = latestCheck(result, pending.sequence);
     if (!check) throw new ApiError("invalid_response");
-    await settleDiceAnimation(check);
+    await diceView.settle(check);
 
     if (result.status === "awaiting_roll") {
       store = putSession(store, {
@@ -984,11 +1061,9 @@ elements.rollD20.addEventListener("click", async () => {
       actionFeedback = { kind: "error", key: failureMessageKey({ errors: result.errors }) };
     }
   } catch (error) {
-    stopDiceAnimation();
-    elements.diceOverlay.hidden = true;
+    diceView.hide();
     if (error instanceof ApiError && error.code === "network_error") {
       backendState = "offline";
-      componentStates = { ...componentStates, backend: "offline" };
     }
     actionFeedback = { kind: "error", key: failureMessageKey(error) };
   } finally {
@@ -1065,7 +1140,6 @@ elements.actionForm.addEventListener("submit", async (event) => {
         ? { kind: "warning", key: warningKey }
         : { kind: "success", key: "game.turnAccepted" };
       if (result.warnings.some((warning) => warning.code === "RULES_UNAVAILABLE")) {
-        componentStates = { ...componentStates, rules: "degraded" };
       }
       scrollToLatest = true;
     } else {
@@ -1074,7 +1148,6 @@ elements.actionForm.addEventListener("submit", async (event) => {
   } catch (error) {
     if (error instanceof ApiError && error.code === "network_error") {
       backendState = "offline";
-      componentStates = { ...componentStates, backend: "offline" };
     }
     if (error instanceof ApiError && error.code === "stale_revision") {
       pendingTurnAttempt = null;
@@ -1094,6 +1167,7 @@ elements.actionForm.addEventListener("submit", async (event) => {
   }
 });
 
+if (!currentState()) currentSection = "session";
 if (readUiSettings().sidebarCollapsed) elements.shell.classList.add("is-collapsed");
 renderAll();
 checkHealth();

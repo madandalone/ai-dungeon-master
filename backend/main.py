@@ -80,6 +80,10 @@ class PlayerTurnRequest(BaseModel):
     expected_revision: int | None = None
 
 
+class RollRequest(BaseModel):
+    sequence: int = Field(ge=1, le=3)
+
+
 class CharacterCreateRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     name: str = Field(min_length=1, max_length=60)
@@ -142,24 +146,12 @@ def create_session(session_data: GameSessionCreate):
 
     sessions[session.id] = session
 
-    characters = (
-        Character(
-            id="hero",
-            name="Hero",
-            concept="Adventurer",
-            hp=10,
-            max_hp=10,
-            stats={ability: 10 for ability in ABILITIES},
-            inventory=(),
-        ),
-    )
-
     game_states[session.id] = GameState(
         session_id=session.id,
         revision=0,
         turn_number=0,
         location_id="start",
-        characters=characters,
+        characters=(),
         world_flags={},
     )
     game_histories[session.id] = []
@@ -355,6 +347,12 @@ def create_character(session_id: str, character_data: CharacterCreateRequest):
 
     def execute_creation():
         ensure_session_loaded(session_id)
+        pending = get_session_store().load_pending_turn(session_id)
+        if pending is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "PENDING_CHECK", "message": "Finish the pending check first."},
+            )
         item_name = character_data.starting_item.strip()
         inventory = ()
         if item_name:
@@ -530,6 +528,7 @@ def process_turn(
 def roll_turn(
     session_id: str,
     action_id: str,
+    roll_data: RollRequest,
     orchestrator: TurnOrchestrator = Depends(get_orchestrator),
 ):
     def execute_roll():
@@ -543,6 +542,21 @@ def roll_turn(
             raise HTTPException(
                 status_code=404,
                 detail={"code": "PENDING_CHECK_NOT_FOUND", "message": "Pending check was not found."},
+            )
+
+        saved_steps = pending.setdefault("roll_responses", {})
+        saved_step = saved_steps.get(str(roll_data.sequence))
+        if saved_step is not None:
+            return saved_step
+
+        current_sequence = pending["check"]["sequence"]
+        if roll_data.sequence != current_sequence:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "ROLL_SEQUENCE_MISMATCH",
+                    "message": f"Expected roll sequence {current_sequence}.",
+                },
             )
 
         state = game_states[session_id]
@@ -580,8 +594,10 @@ def roll_turn(
                 **continuation.check.model_dump(),
                 "sequence": len(events) + 1,
             }
+            response = _pending_response(pending, state)
+            saved_steps[str(roll_data.sequence)] = response
             store.save_pending_turn(session_id, action_id, pending)
-            return _pending_response(pending, state)
+            return response
 
         outcome = orchestrator.finalize_turn(
             state,
@@ -590,9 +606,19 @@ def roll_turn(
             Dice(SystemRandomSource()),
             events,
             rules_failed=bool(pending.get("rules_failed")),
+            declared_outcome=continuation.outcome,
         )
+        if not outcome.accepted:
+            codes = ",".join(error.code for error in outcome.errors) or "UNKNOWN"
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": "INVALID_DM_RESULT",
+                    "message": f"Dungeon Master consequences were rejected by Engine: {codes}",
+                },
+            )
         return _turn_response(
-            session_id, action, outcome, clear_pending=outcome.accepted,
+            session_id, action, outcome, clear_pending=True,
         )
 
     result, _replayed = turn_executor.run(

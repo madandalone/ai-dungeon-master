@@ -86,6 +86,11 @@ class TestSQLiteSessionStore(unittest.TestCase):
     def test_unknown_session(self):
         self.assertIsNone(self.store.load_session("unknown"))
 
+    def test_save_state_reports_stale_revision_without_using_a_closed_connection(self):
+        self.store.save_state("test", make_state(1, 9))
+        with self.assertRaises(StateRevisionConflict):
+            self.store.save_state("test", make_state(1, 8))
+
     def test_rollback_on_history_error(self):
         entry = TurnHistoryEntry(
             player_action="Атакую",

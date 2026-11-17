@@ -280,7 +280,9 @@ class SQLiteSessionStore:
                 ),
             )
 
-        if cursor.rowcount != 1:
+            if cursor.rowcount == 1:
+                return
+
             exists = connection.execute(
                 "SELECT 1 FROM game_states WHERE session_id = ?",
                 (session_id,),

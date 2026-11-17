@@ -1,5 +1,8 @@
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -12,10 +15,19 @@ from backend.main import (
     FakeDungeonMaster,
     FakeRulesProvider,
 )
+import backend.main as backend
+from backend.storage import SQLiteSessionStore
+from backend.tests.helpers import create_hero
 from integration.factory import build_orchestrator
 class TestTurnHistory(unittest.TestCase):
 
     def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = SQLiteSessionStore(Path(self.tmp.name) / "game.db")
+        self.store_patch = patch.object(backend, "get_session_store", return_value=self.store)
+        self.store_patch.start()
+        self.addCleanup(self.store_patch.stop)
         sessions.clear()
         game_states.clear()
         game_histories.clear()
@@ -27,6 +39,7 @@ class TestTurnHistory(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.session_id = response.json()["id"]
+        self.character_id = create_hero(self.client, self.session_id)["id"]
 
         app.dependency_overrides[get_orchestrator] = lambda: build_orchestrator(
             dm=FakeDungeonMaster(),
@@ -34,11 +47,11 @@ class TestTurnHistory(unittest.TestCase):
         )
         self.addCleanup(app.dependency_overrides.clear)
 
-    def send_turn(self, character_id="hero", text="Я открываю дверь"):
+    def send_turn(self, character_id=None, text="Я открываю дверь"):
         return self.client.post(
             f"/sessions/{self.session_id}/turns",
             json={
-                "character_id": character_id,
+                "character_id": character_id or self.character_id,
                 "text": text,
             },
         )
@@ -57,7 +70,7 @@ class TestTurnHistory(unittest.TestCase):
         self.assertEqual(len(history), 2)
         self.assertEqual(history[0].player_action, "Я открываю дверь")
         self.assertEqual(history[1].player_action, "Я осматриваю комнату")
-        self.assertEqual(second.json()["revision"], 2)
+        self.assertEqual(second.json()["revision"], 3)
 
     def test_rejected_turn_not_saved(self):
         response = self.send_turn(character_id="unknown")
@@ -65,7 +78,7 @@ class TestTurnHistory(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["accepted"])
         self.assertEqual(len(game_histories[self.session_id]), 0)
-        self.assertEqual(game_states[self.session_id].revision, 0)
+        self.assertEqual(game_states[self.session_id].revision, 1)
 
     def test_dm_notes_not_exposed(self):
         response = self.send_turn()

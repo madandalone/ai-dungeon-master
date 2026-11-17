@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#000000">
     <title>AI Dungeon Master</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="styles.css?v=20261115-1">
+    <link rel="stylesheet" href="styles.css?v=20261117-2">
   </head>
   <body>
     <div class="app-shell" id="app-shell">
@@ -29,10 +29,11 @@
         </nav>
 
         <div class="sidebar-footer">
-          <div class="server-mini" id="server-mini" data-state="checking"><span class="status-pixel" aria-hidden="true"></span><span class="sidebar-only" id="server-mini-text" data-i18n="backend.checking">Проверяем сервер…</span></div>
+          <button class="server-mini" id="server-mini" data-state="checking" type="button"><span class="status-pixel" aria-hidden="true"></span><span class="sidebar-only" id="server-mini-text" aria-live="polite" data-i18n="backend.checking">Проверяем сервер…</span></button>
           <div class="language-switch" aria-label="Language">
             <button class="language-button is-active" type="button" data-language="ru" aria-pressed="true">RU</button><span aria-hidden="true">/</span><button class="language-button" type="button" data-language="en" aria-pressed="false">EN</button>
           </div>
+          <button class="language-compact" id="language-compact" type="button" aria-label="Переключить язык" data-i18n-aria-label="language.toggle">RU</button>
         </div>
       </aside>
 
@@ -41,13 +42,18 @@
       <main class="main-stage">
         <header class="stage-header">
           <button class="icon-button mobile-menu" id="mobile-menu" type="button" aria-controls="sidebar" aria-expanded="false"><span aria-hidden="true">☰</span><span class="sr-only" data-i18n="nav.open">Открыть меню</span></button>
-          <div><p class="kicker" data-i18n="header.kicker">ПРИКЛЮЧЕНИЕ ЖДЁТ</p><h1 id="section-title">Игра</h1><p class="section-description" id="section-description">Выберите героя и опишите его следующий шаг.</p></div>
+          <div class="stage-copy"><p class="kicker" data-i18n="header.kicker">ПРИКЛЮЧЕНИЕ ЖДЁТ</p><h1 id="section-title">Игра</h1><p class="section-description" id="section-description">Выберите героя и опишите его следующий шаг.</p></div>
+          <div class="session-context" id="session-context">
+            <span class="session-context-label" data-i18n="session.current">Текущая сессия</span>
+            <strong id="header-session-name">Не выбрана</strong>
+            <button class="copy-session-button" id="copy-session-id" type="button" data-i18n="session.copyId" disabled>Копировать ID</button>
+            <span class="copy-feedback" id="copy-feedback" role="status" aria-live="polite"></span>
+          </div>
         </header>
 
         <section class="adventure-hud" aria-label="Текущий игровой контекст" data-i18n-aria-label="context.aria">
-          <div class="hud-cell"><span class="hud-label" data-i18n="context.session">Сессия</span><strong class="hud-value" id="hud-session">Не выбрана</strong></div>
           <div class="hud-cell hud-hero"><span class="hud-label" data-i18n="context.hero">Ваш герой</span><strong class="hud-value" id="hud-hero">Не выбран</strong><span class="hud-hp" id="hud-hero-hp"></span></div>
-          <div class="hud-cell hud-event"><span class="hud-label" data-i18n="context.lastEvent">Последнее событие</span><span class="hud-value" id="hud-event" aria-live="polite">История ещё не началась</span></div>
+          <button class="hud-cell hud-event" id="hud-event-toggle" type="button" aria-expanded="false"><span class="hud-label" data-i18n="context.lastEvent">Последнее событие</span><span class="hud-value" id="hud-event" aria-live="polite">История ещё не началась</span><span class="hud-expand" id="hud-expand" data-i18n="context.expand">Раскрыть</span></button>
         </section>
 
         <div class="offline-banner" id="offline-banner" hidden>
@@ -62,7 +68,7 @@
               <div class="panel-heading story-heading">
                 <div><p class="panel-eyebrow" data-i18n="game.storyEyebrow">ЛЕТОПИСЬ</p><h2 data-i18n="game.storyTitle">История приключения</h2></div>
                 <div class="turn-tools">
-                  <div class="turn-counters"><span class="turn-badge" id="turn-badge">0</span><span class="revision-badge" id="revision-badge">R0</span></div>
+                  <div class="turn-counters"><span class="turn-badge" id="turn-badge">ХОД 0</span></div>
                   <button class="secondary-button sync-button" id="sync-session" type="button" data-i18n-aria-label="game.syncAria" aria-label="Обновить состояние с сервера"><span aria-hidden="true">↻</span><span data-i18n="game.sync">Обновить</span></button>
                   <span class="sync-status" id="sync-status" aria-live="polite"></span>
                 </div>
@@ -85,13 +91,13 @@
                 </div>
               </section>
               <form id="action-form" class="action-console">
-                <label><span data-i18n="game.actor">Кто действует</span><select id="acting-character" name="acting-character" required></select></label>
+                <label><span data-i18n="game.actor">Кто действует</span><span class="select-control"><select id="acting-character" name="acting-character" required></select><span class="select-chevron" aria-hidden="true"></span></span></label>
                 <label><span data-i18n="game.action">Действие героя</span><textarea id="action-text" name="action-text" rows="3" maxlength="500" required data-i18n-placeholder="game.actionPlaceholder" placeholder="Что делает ваш герой?"></textarea></label>
                 <div class="console-footer"><p class="context-hint" id="action-hint" data-i18n="game.readyHint">Ход обработают Мастер, правила и игровой движок.</p><button class="primary-button command-button" id="action-submit" type="submit"><span class="command-soul" aria-hidden="true">♥</span><span id="action-submit-label" data-i18n="game.send">Отправить действие</span></button></div>
                 <p class="turn-status" id="action-status" role="status" aria-live="polite" hidden></p>
               </form>
             </article>
-            <aside class="pixel-panel party-panel"><div class="panel-heading compact"><div><p class="panel-eyebrow" data-i18n="game.partyEyebrow">ОТРЯД</p><h2 data-i18n="game.partyTitle">Активный герой</h2></div></div><div id="active-hero"></div></aside>
+            <aside class="pixel-panel party-panel"><div class="panel-heading compact"><div><p class="panel-eyebrow" data-i18n="game.partyEyebrow">ОТРЯД</p><h2 data-i18n="game.partyRosterTitle">Герои сессии</h2></div></div><div id="active-hero" class="party-roster"></div></aside>
           </div>
         </section>
 
@@ -131,25 +137,16 @@
         </section>
 
         <section class="view" id="view-session" data-view="session" hidden aria-labelledby="section-title">
-          <div class="section-grid">
-            <article class="pixel-panel connection-panel"><p class="panel-eyebrow" data-i18n="session.connectionEyebrow">СВЯЗЬ</p><h2 data-i18n="session.connectionTitle">Backend</h2><div class="connection-state" id="connection-state" data-state="checking"><span class="status-orb" aria-hidden="true"></span><div><strong id="health-status" data-i18n="backend.checking">Проверяем сервер…</strong><p id="health-description" data-i18n="backend.checkingBody">Это займёт всего несколько секунд.</p></div></div><button class="secondary-button" id="recheck-health" type="button" data-i18n="backend.retry">Проверить снова</button></article>
-            <article class="pixel-panel form-panel">
+          <div class="session-layout">
+            <article class="pixel-panel saved-sessions-panel"><div class="panel-heading compact"><div><p class="panel-eyebrow" data-i18n="session.savedEyebrow">СОХРАНЕНО В ЭТОЙ ВКЛАДКЕ</p><h2 data-i18n="session.savedTitle">Ваши сессии</h2></div></div><div id="session-list" class="session-list"></div></article>
+            <article class="pixel-panel session-form-panel">
               <p class="panel-eyebrow" data-i18n="session.newEyebrow">НОВАЯ ИСТОРИЯ</p><h2 data-i18n="session.newTitle">Создать сессию</h2><p class="panel-copy" data-i18n="session.newBody">Название поможет быстро узнать эту игру среди других приключений.</p>
               <form id="create-session-form" class="stack-form"><label><span data-i18n="session.name">Название приключения</span><input id="session-name" name="session-name" type="text" maxlength="80" required data-i18n-placeholder="session.namePlaceholder" placeholder="Тайна затонувшего храма"></label><button class="primary-button" type="submit" data-i18n="session.create">Создать на сервере</button></form>
               <div class="form-divider"><span data-i18n="common.or">или</span></div>
               <form id="join-session-form" class="stack-form"><label><span data-i18n="session.code">Код сессии</span><input id="join-session-id" name="join-session-id" type="text" maxlength="80" required data-i18n-placeholder="session.codePlaceholder" placeholder="Вставьте ID сессии"></label><button class="secondary-button" type="submit" data-i18n="session.join">Подключиться</button><p class="context-hint" data-i18n="session.joinHint">Код проверяется через Backend, затем загружается состояние игры.</p></form>
               <p class="form-message" id="session-result" role="status"></p>
             </article>
-            <article class="pixel-panel integration-panel">
-              <div class="panel-heading compact"><div><p class="panel-eyebrow" data-i18n="services.eyebrow">ИНТЕГРАЦИЯ</p><h2 data-i18n="services.title">Готовность модулей</h2><p class="panel-copy" data-i18n="services.body">Показывает только статусы, которые подтвердил Backend. «Нет данных» не означает ошибку.</p></div></div>
-              <div class="service-grid" id="service-grid" aria-live="polite">
-                <article class="service-card" data-service="backend"><span class="service-pixel" aria-hidden="true"></span><div><strong data-i18n="services.backend">Backend API</strong><p data-i18n="services.backendBody">Сессии, состояние и отправка ходов.</p></div><span class="service-state"></span></article>
-                <article class="service-card" data-service="dm"><span class="service-pixel" aria-hidden="true"></span><div><strong data-i18n="services.dm">AI Master</strong><p data-i18n="services.dmBody">Повествование и последствия действия.</p></div><span class="service-state"></span></article>
-                <article class="service-card" data-service="rules"><span class="service-pixel" aria-hidden="true"></span><div><strong data-i18n="services.rules">Rules Service</strong><p data-i18n="services.rulesBody">Поиск подходящих правил для хода.</p></div><span class="service-state"></span></article>
-                <article class="service-card" data-service="history"><span class="service-pixel" aria-hidden="true"></span><div><strong data-i18n="services.history">Публичная история</strong><p data-i18n="services.historyBody">Летопись без приватных заметок Мастера.</p></div><span class="service-state"></span></article>
-              </div>
-            </article>
-            <article class="pixel-panel wide-panel saved-sessions-panel"><div class="panel-heading compact"><div><p class="panel-eyebrow" data-i18n="session.savedEyebrow">СОХРАНЕНО В ЭТОЙ ВКЛАДКЕ</p><h2 data-i18n="session.savedTitle">Ваши сессии</h2></div></div><div id="session-list" class="session-list"></div></article>
+            <article class="pixel-panel connection-panel"><p class="panel-eyebrow" data-i18n="session.connectionEyebrow">СВЯЗЬ</p><h2 data-i18n="session.connectionTitle">Backend</h2><div class="connection-state" id="connection-state" data-state="checking"><span class="status-orb" aria-hidden="true"></span><div><strong id="health-status" data-i18n="backend.checking">Проверяем сервер…</strong><p id="health-description" data-i18n="backend.checkingBody">Это займёт всего несколько секунд.</p></div></div><button class="secondary-button" id="recheck-health" type="button" data-i18n="backend.retry">Проверить снова</button></article>
           </div>
         </section>
       </main>
@@ -161,6 +158,6 @@
         <p class="dice-formula" id="dice-formula"></p>
       </div>
     </div>
-    <script type="module" src="js/app.js"></script>
+    <script type="module" src="js/app.js?v=20261117-2"></script>
   </body>
 </html>
