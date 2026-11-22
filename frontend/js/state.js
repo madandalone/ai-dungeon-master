@@ -115,3 +115,14 @@ export function activateSession(store, sessionId) {
   if (!normalized.sessions[sessionId]) return normalized;
   return { ...normalized, activeSessionId: sessionId };
 }
+
+export function removeSession(store, sessionId) {
+  const normalized = normalizeSessionStore(store);
+  if (!normalized.sessions[sessionId]) return normalized;
+  const sessions = { ...normalized.sessions };
+  delete sessions[sessionId];
+  const activeSessionId = normalized.activeSessionId === sessionId
+    ? Object.keys(sessions)[0] || null
+    : normalized.activeSessionId;
+  return { ...normalized, activeSessionId, sessions };
+}

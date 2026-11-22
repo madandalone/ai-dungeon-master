@@ -1,11 +1,12 @@
 import {
-  ApiError, cancelTurn, createCharacter, createSession, fetchHealth, fetchSessionState,
-  rollTurn, submitTurn,
-} from "./api.js?v=20261117-2";
-import { SETTINGS_KEY, applyTranslations, getLanguage, initLanguage, setLanguage, t } from "./i18n.js?v=20261117-2";
+  ApiError, cancelTurn, createCharacter, createSession, deleteSession, fetchHealth,
+  fetchSessionState, rollTurn, submitTurn,
+} from "./api.js?v=20261123-1";
+import { SETTINGS_KEY, applyTranslations, getLanguage, initLanguage, setLanguage, t } from "./i18n.js?v=20261123-1";
 import {
-  activateSession, activePublicState, emptyPublicState, loadSessionStore, putSession, saveSessionStore,
-} from "./state.js";
+  activateSession, activePublicState, emptyPublicState, loadSessionStore, putSession,
+  removeSession, saveSessionStore,
+} from "./state.js?v=20261123-1";
 import { characterArchetype, healthPercent, healthTone, iconMarkup, orderCharactersByActive } from "./visuals.js?v=20261117-1";
 import { createDiceView } from "./dice-view.js?v=20261117-2";
 import {
@@ -51,6 +52,12 @@ const elements = {
   joinSessionId: document.querySelector("#join-session-id"),
   sessionResult: document.querySelector("#session-result"),
   sessionList: document.querySelector("#session-list"),
+  sessionDeleteDialog: document.querySelector("#session-delete-dialog"),
+  sessionDeleteMessage: document.querySelector("#session-delete-message"),
+  sessionDeletePending: document.querySelector("#session-delete-pending"),
+  sessionDeleteError: document.querySelector("#session-delete-error"),
+  sessionDeleteCancel: document.querySelector("#session-delete-cancel"),
+  sessionDeleteConfirm: document.querySelector("#session-delete-confirm"),
   characterForm: document.querySelector("#character-form"),
   characterName: document.querySelector("#character-name"),
   characterConcept: document.querySelector("#character-concept"),
@@ -130,6 +137,8 @@ let actionFeedback = null;
 let hudEventExpanded = false;
 let copyFeedbackKey = "";
 let copyFeedbackTimer = null;
+let sessionDeleteTarget = null;
+let sessionDeletePending = false;
 const syncTimes = new Map();
 const receiptsBySession = new Map();
 const ABILITY_KEYS = new Set([
@@ -694,6 +703,94 @@ async function copySessionIdentifier(sessionId, button = null) {
   }
 }
 
+function openSessionDeleteDialog(session) {
+  sessionDeleteTarget = { ...session };
+  const name = session.session_name
+    || (session.connection === "legacy" ? t("session.legacy") : t("session.untitled"));
+  const serverSession = session.connection === "server";
+  elements.sessionDeleteMessage.textContent = t(
+    serverSession ? "session.deleteServerBody" : "session.removeLocalBody",
+    { name },
+  );
+  elements.sessionDeletePending.hidden = !session.pending_turn;
+  elements.sessionDeleteError.textContent = "";
+  elements.sessionDeleteConfirm.textContent = t(
+    serverSession ? "session.deleteConfirm" : "session.removeConfirm",
+  );
+  elements.sessionDeleteDialog.showModal();
+  elements.sessionDeleteCancel.focus();
+}
+
+function closeSessionDeleteDialog() {
+  if (sessionDeletePending) return;
+  sessionDeleteTarget = null;
+  elements.sessionDeleteDialog.close();
+}
+
+function setSessionDeleteBusy(busy) {
+  sessionDeletePending = busy;
+  elements.sessionDeleteCancel.disabled = busy;
+  elements.sessionDeleteConfirm.disabled = busy;
+  if (busy) elements.sessionDeleteConfirm.textContent = t("session.deleting");
+}
+
+async function confirmSessionDeletion() {
+  if (!sessionDeleteTarget || sessionDeletePending) return;
+  const target = { ...sessionDeleteTarget };
+  const serverSession = target.connection === "server";
+  if (store.activeSessionId === target.session_id && (turnPending || syncPending || characterPending)) {
+    elements.sessionDeleteError.textContent = t("session.deleteBusy");
+    return;
+  }
+  setSessionDeleteBusy(true);
+  elements.sessionDeleteError.textContent = "";
+  try {
+    if (serverSession) {
+      if (!canReachBackend()) throw new ApiError("network_error");
+      try {
+        await deleteSession(target.session_id);
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.code !== "not_found") throw error;
+      }
+    }
+
+    const wasActive = store.activeSessionId === target.session_id;
+    store = removeSession(store, target.session_id);
+    syncTimes.delete(target.session_id);
+    receiptsBySession.delete(target.session_id);
+    if (wasActive) {
+      selectedCharacterId = "";
+      pendingTurnAttempt = null;
+      actionFeedback = null;
+      elements.actionText.value = "";
+      diceView.hide();
+    }
+    persistStore();
+    currentSection = "session";
+    writeUiSettings({ activeSection: currentSection });
+    elements.sessionDeleteDialog.close();
+    sessionDeleteTarget = null;
+    elements.sessionResult.textContent = t(
+      serverSession ? "session.deleted" : "session.removed",
+      { name: target.session_name || t("session.untitled") },
+    );
+    renderAll();
+  } catch (error) {
+    elements.sessionDeleteError.textContent = t(
+      error instanceof ApiError && error.code === "network_error"
+        ? "session.deleteOffline"
+        : "session.deleteError",
+    );
+  } finally {
+    setSessionDeleteBusy(false);
+    if (sessionDeleteTarget) {
+      elements.sessionDeleteConfirm.textContent = t(
+        serverSession ? "session.deleteConfirm" : "session.removeConfirm",
+      );
+    }
+  }
+}
+
 function renderSessions() {
   elements.sessionList.replaceChildren();
   const sessions = Object.values(store.sessions);
@@ -756,7 +853,20 @@ function renderSessions() {
         }
       }
     });
-    actions.append(copyButton, button);
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "text-button danger-text-button";
+    deleteButton.textContent = t(
+      session.connection === "server" ? "session.delete" : "session.removeLocal",
+    );
+    const activeOperation = session.session_id === store.activeSessionId
+      && (turnPending || syncPending || characterPending);
+    deleteButton.disabled = session.connection === "server"
+      && (!canReachBackend() || activeOperation);
+    deleteButton.addEventListener("click", () => openSessionDeleteDialog(session));
+
+    actions.append(copyButton, button, deleteButton);
     item.append(text, actions);
     elements.sessionList.append(item);
   });
@@ -1165,6 +1275,19 @@ elements.actionForm.addEventListener("submit", async (event) => {
     if (changes) playStateChanges(changes);
     if (scrollToLatest) elements.log.lastElementChild?.scrollIntoView({ block: "nearest" });
   }
+});
+
+elements.sessionDeleteCancel.addEventListener("click", closeSessionDeleteDialog);
+elements.sessionDeleteConfirm.addEventListener("click", confirmSessionDeletion);
+elements.sessionDeleteDialog.addEventListener("cancel", (event) => {
+  if (sessionDeletePending) {
+    event.preventDefault();
+    return;
+  }
+  sessionDeleteTarget = null;
+});
+elements.sessionDeleteDialog.addEventListener("close", () => {
+  if (!sessionDeletePending) sessionDeleteTarget = null;
 });
 
 if (!currentState()) currentSection = "session";

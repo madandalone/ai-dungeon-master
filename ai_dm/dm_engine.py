@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from openai import APIError, OpenAI
 from pydantic import BaseModel, ValidationError
 
-from ai_dm.context import GenerationLimits, fit_messages
+from ai_dm.context import GenerationLimits, fit_messages, message_chars
 from ai_dm.dnd_api import DnD5eClient
 from ai_dm.errors import ConfigurationError, InvalidResponseError
 from ai_dm.models import (
@@ -112,16 +112,16 @@ class AIDungeonMaster:
         limits = GenerationLimits.from_env()
         retry_policy = RetryPolicy.from_env()
         model = os.getenv("MODEL_NAME", "Qwen/Qwen3.8-27B")
-        schema = json.dumps(response_model.model_json_schema(), ensure_ascii=False, indent=2)
         repair_messages = []
         provider_retry_used = False
         repair_used = False
+        started_at = time.perf_counter()
 
         def build_messages(count: int) -> list[dict[str, str]]:
             text = prompt(count) if callable(prompt) else prompt
             return [
                 {"role": "system", "content": templates.system},
-                {"role": "user", "content": templates.request_prompt(text, schema)},
+                {"role": "user", "content": templates.request_prompt(text)},
                 *repair_messages,
             ]
 
@@ -163,6 +163,17 @@ class AIDungeonMaster:
                 result = response_model.model_validate_json(_strip_json_fence(raw))
                 if validate_response is not None:
                     result = validate_response(result)
+                logger.info(
+                    "dm generation operation=%s model=%s prompt_chars=%s history=%s "
+                    "attempts=%s repair=%s duration_ms=%s",
+                    response_model.__name__,
+                    model,
+                    message_chars(messages),
+                    history_count,
+                    attempt + 1,
+                    repair_used,
+                    round((time.perf_counter() - started_at) * 1000),
+                )
                 return result
             except ValueError as exc:
                 details = (
@@ -217,13 +228,11 @@ class AIDungeonMaster:
         history = select_history(request)
 
         def prompt(count: int) -> str:
-            base = templates.turn_prompt(request, history, count)
-            return base + (
-                "\n\n### РЕЖИМ ПЛАНИРОВАНИЯ ПРОВЕРКИ:\n"
-                "Если действие безопасно и его исход очевиден, верни status=resolved и response. "
-                "Если есть реальный риск и значимая цена провала, не описывай исход и не меняй "
-                "состояние: верни status=check, одну из шести характеристик, DC из "
-                "[5, 10, 15, 20, 25, 30] и краткую причину. Значение d20 определяет только Engine."
+            return templates.turn_prompt(
+                request,
+                history,
+                count,
+                check_text=templates.plan_check_prompt(request),
             )
 
         return self._generate(
@@ -241,7 +250,12 @@ class AIDungeonMaster:
         expected = "success" if all(check.success for check in checks) else "failure"
 
         def prompt(count: int) -> str:
-            base = templates.turn_prompt(request, history, count)
+            base = templates.turn_prompt(
+                request,
+                history,
+                count,
+                check_text=templates.resolution_check,
+            )
             facts = json.dumps([check.model_dump() for check in checks], ensure_ascii=False)
             continuation = (
                 "После успеха можно запросить следующую значимую проверку."
