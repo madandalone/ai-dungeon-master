@@ -273,9 +273,8 @@ def process_turn(session_id: str, turn: PlayerTurnRequest, orchestrator: TurnOrc
 ## Начало кампании (`integration/campaign.py`)
 
 По описанию проекта DM заранее придумывает скрытый сюжет по созданным персонажам, а потом раскрывает его
-по ходу игры. `AIDungeonMaster.generate_campaign_start` это умеет, но Backend его не вызывает: в каждый
-ход уходит `hidden_plot="Test campaign"` и пустой `room_context` (проверено на настоящем приложении:
-DM получает ровно эти значения). `begin_campaign` соединяет недостающее звено:
+по ходу игры. `AIDungeonMaster.generate_campaign_start` это умеет, но раньше Backend его не вызывал: в каждый
+ход уходил `hidden_plot="Test campaign"` и пустой `room_context`. `begin_campaign` соединяет недостающее звено:
 
 ```text
 GameState с героями  ->  begin_campaign(dm, state, theme, dice, monster)
@@ -303,26 +302,25 @@ GameState с героями  ->  begin_campaign(dm, state, theme, dice, monster)
 - Ошибки DM переводятся тем же `dungeon_master_error`, что и ошибки хода: те же категории и коды.
 - `build_dungeon_master()` возвращает один объект, годный и как `DungeonMaster`, и как `CampaignMaster`.
 
-Что нужно от Backend (его зона): таблица `campaigns(session_id, title, hidden_plot, room_context,
-intro_narrative)` в SQLite рядом с состоянием, эндпоинт запуска кампании и подстановка сохранённых
-`hidden_plot` и `room_context` в `play_turn` вместо заглушки. Набросок:
+### Как кампания подключена к приложению
 
-```python
-@app.post("/sessions/{session_id}/campaign")
-def start_campaign(session_id: str, body: CampaignRequest):          # body.theme, body.monster
-    def start():
-        ensure_session_loaded(session_id)
-        result = begin_campaign(dm, game_states[session_id], body.theme, Dice(LocalRandomSource()), body.monster)
-        store.save_campaign(session_id, result.state, result.campaign)   # состояние и кампания одной записью
-        game_states[session_id] = result.state
-        return {"title": result.campaign.title, "narration": result.campaign.intro_narrative,
-                "state": public_state(session_id)}
-    response, _ = turn_executor.run(session_id, f"campaign:{session_id}", start, remember=lambda r: True)
-    return response
-```
+Backend использует `begin_campaign` через `TurnOrchestrator.start_campaign` (оркестратор знает, умеет ли
+его DM писать кампании: `can_start_campaign`). Состояние кампании лежит в таблице `sessions`
+(`hidden_plot`, `room_context`, `campaign_title`, `campaign_started`; старые базы мигрируют сами).
 
-Повторный запрос на запуск вернёт тот же ответ без нового вызова DM (ключ `campaign:<id>`), а сбой DM
-(`DungeonMasterError`, 502 или статус по `category`) оставит сессию без кампании, и запуск можно повторить.
+| Путь | Что происходит |
+|---|---|
+| `POST /sessions/{id}/campaign` (`theme`, `monster` необязательны) | DM пишет сюжет по текущим героям; ответ: `created`, `title`, `intro`, публичное состояние. Повтор возвращает `created: false` без нового вызова DM; сбой DM - 502, кампании нет, запрос можно повторить; DM без этой способности - 409 `CAMPAIGN_UNAVAILABLE` |
+| Первый ход новой игры (`POST /sessions/{id}/turns`) | Если кампании ещё нет, сюжет не задан автором при создании сессии и DM умеет писать кампании, она создаётся автоматически перед ходом, поэтому интерфейс менять не нужно. Ожидаемая ревизия клиента, равная ревизии до кампании, переносится на новую, чужая устаревшая ревизия отклоняется как обычно |
+| Последующие ходы | В DM уходят сохранённые `hidden_plot` и `room_context` вместо заглушки |
+| `POST /sessions` с явным `hidden_plot` | Сюжет автора сохраняется, кампания не генерируется |
+
+Вводный текст попадает в летопись как запись мастера без реплики игрока (публичное состояние не
+показывает пустую строку игрока); сюжет на клиент не уходит ни в одном ответе (проверено тестами).
+Состояние, запись кампании и вводная запись истории сохраняются одной транзакцией с проверкой ревизии.
+
+Ограничение: при автоматическом старте вводный текст виден в летописи после перезагрузки сессии (ответ
+хода его не содержит); явный `POST .../campaign` возвращает его сразу.
 
 ## Как Backend подключён сейчас и что стоит поправить
 
@@ -333,7 +331,7 @@ def start_campaign(session_id: str, body: CampaignRequest):          # body.them
 | Ситуация | Результат |
 |---|---|
 | DM вернул `ProviderError(category="quota", status_code=402)` | HTTP 502, `detail`: "Исчерпана квота или требуется оплата. Проверьте лимиты и баланс у провайдера. HTTP 402."; в логе `category=quota retryable=False`; ход не применён |
-| Ход с настоящим оркестратором, DM-заглушкой и книгой правил в `keyword` | DM получает `hidden_plot="Test campaign"`, `room_context=""` и (для русской реплики, до добавления словаря) `No specific rules found for this action.`; со словарём та же реплика получает раздел "Jumping" |
+| Ход с настоящим оркестратором, DM-заглушкой и книгой правил в `keyword` (до подключения кампании) | DM получал `hidden_plot="Test campaign"`, `room_context=""` и (для русской реплики, до добавления словаря) `No specific rules found for this action.`; со словарём та же реплика получает раздел "Jumping" |
 | Повтор того же `action_id` после перезапуска сервера (состояние в SQLite) | `accepted=false`, `STALE_REVISION`: память об `action_id` пропала, но ревизия в базе защищает от двойного применения (HP не изменилось) |
 | `build_orchestrator()` бросает `IntegrationConfigError` (нет `RULES_BOOK_PATH`) | на каждый запрос HTTP 500, **сборка выполняется заново на каждый запрос** (3 запроса - 3 вызова): `lru_cache` не запоминает исключения |
 
@@ -347,7 +345,7 @@ def start_campaign(session_id: str, body: CampaignRequest):          # body.them
 
 ## Тесты
 
-`python -m unittest discover -s integration/tests -t .` - 77 тестов с реальным движком и реальным
+`python -m unittest discover -s integration/tests -t .` - 80 тестов с реальным движком и реальным
 `RulesService`/`RagRulesService`, DM заменён заглушкой `FakeDM`:
 - оркестратор: применение изменений, контекст для DM (правила, сюжет, состояние, история), отсечка
   устаревшей ревизии без вызова LLM, отбрасывание нарратива при отказе движка, неизвестный персонаж,
