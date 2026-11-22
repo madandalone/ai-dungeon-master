@@ -120,6 +120,19 @@ class ApplyActionTests(unittest.TestCase):
         self.assertEqual(result.state.turn_number, 5)
         self.assertEqual(result.state.characters, original.characters)
 
+    def test_declared_check_outcome_must_match_engine_result(self):
+        resolved = resolve_skill_check(
+            state(), action(), SkillCheck("ira", "strength", 10), Dice(SequenceSource([12])),
+        )
+        result = apply_action(
+            state(), action(), [], quiet_dice(),
+            resolved_checks=[resolved], declared_outcome="failure",
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.errors[0].code, "INVALID_CHECK_OUTCOME")
+        self.assertEqual(result.state.revision, 3)
+
     def test_rejected_action_returns_the_same_state(self):
         original = state()
         result = apply_action(original, action(text="  "), [], quiet_dice())

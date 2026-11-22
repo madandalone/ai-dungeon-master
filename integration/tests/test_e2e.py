@@ -137,14 +137,17 @@ class FullGameScenarioTests(Scenario):
         pending = first.json()
         self.assertEqual(pending["status"], "awaiting_roll")
         self.assertEqual(len(self.dm.campaigns), 1, "the campaign is written once, before the first turn")
-        self.assertEqual({c.name for c in self.dm.campaigns[0].characters}, {"Hero", "Элиас"})
+        self.assertEqual({c.name for c in self.dm.campaigns[0].characters}, {"Элиас"})
         planned = self.dm.plans[0]
         self.assertEqual((planned.hidden_plot, planned.acting_character), (PLOT, "Элиас"))
         self.assertEqual(planned.game_state.location, "Затопленный склеп")
         self.assertIn("long jump", planned.rules_summary, "a Russian action reached the English rule via the glossary")
 
         # 3. the d20 is rolled by the Engine and the DM narrates the outcome
-        rolled = self.client.post(f"/sessions/{session_id}/turns/a-1/roll")
+        rolled = self.client.post(
+            f"/sessions/{session_id}/turns/a-1/roll",
+            json={"sequence": pending["pending_turn"]["sequence"]},
+        )
         self.assertEqual(rolled.status_code, 200, rolled.text)
         done = rolled.json()
         self.assertEqual((done["status"], done["accepted"], done["warnings"]), ("resolved", True, []))
@@ -197,9 +200,10 @@ class FullGameScenarioTests(Scenario):
         self.orchestrator = build_orchestrator(dm=self.dm, rules=DownRules())
         backend.app.dependency_overrides[backend.get_orchestrator] = lambda: self.orchestrator
         session_id = self.client.post("/sessions", json={"name": "Склеп"}).json()["id"]
+        hero_id, revision = self.create_hero(session_id, 0)
         with self.assertLogs("integration.orchestrator", "WARNING"):
             turn = self.client.post(f"/sessions/{session_id}/turns", json={
-                "character_id": "hero", "text": "Я осматриваю комнату", "expected_revision": 0,
+                "character_id": hero_id, "text": "Я осматриваю комнату", "expected_revision": revision,
             })
         self.assertEqual((turn.status_code, turn.json()["accepted"]), (200, True))
         self.assertEqual(turn.json()["warnings"], [{"code": "RULES_UNAVAILABLE"}])
@@ -207,8 +211,9 @@ class FullGameScenarioTests(Scenario):
 
     def test_a_question_without_matching_rules_still_gets_an_answer(self):
         session_id = self.client.post("/sessions", json={"name": "Склеп"}).json()["id"]
+        hero_id, revision = self.create_hero(session_id, 0)
         turn = self.client.post(f"/sessions/{session_id}/turns", json={
-            "character_id": "hero", "text": "Здравствуйте, трактирщик", "expected_revision": 0,
+            "character_id": hero_id, "text": "Здравствуйте, трактирщик", "expected_revision": revision,
         })
         self.assertTrue(turn.json()["accepted"])
         self.assertIn("No specific rules", self.dm.plans[0].rules_summary)
@@ -252,7 +257,10 @@ class RealLlmScenario(Scenario):
         rolls = 0
         while response.status_code == 202 and rolls < 3:
             rolls += 1
-            response = self.client.post(f"/sessions/{session_id}/turns/real-1/roll")
+            response = self.client.post(
+                f"/sessions/{session_id}/turns/real-1/roll",
+                json={"sequence": response.json()["pending_turn"]["sequence"]},
+            )
             self.assertIn(response.status_code, (200, 202), response.text)
         body = response.json()
         self.assertEqual((body["status"], body["accepted"]), ("resolved", True))

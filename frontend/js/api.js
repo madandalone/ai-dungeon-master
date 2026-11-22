@@ -29,7 +29,16 @@ async function requestJson(url, options = {}, fetcher = globalThis.fetch) {
   } catch {
     throw new ApiError("network_error");
   }
-  if (!response.ok) throw new ApiError(errorCodeForStatus(response.status), response.status);
+  if (!response.ok) {
+    let body = null;
+    try {
+      body = await response.json();
+    } catch {
+      // Some upstream failures have no JSON body.
+    }
+    const code = body?.detail?.code || errorCodeForStatus(response.status);
+    throw new ApiError(code, response.status);
+  }
   try {
     return await response.json();
   } catch {
@@ -253,10 +262,14 @@ export async function submitTurn(sessionId, turn, fetcher = globalThis.fetch) {
   return { ...body, status: body.status || "resolved", warnings: body.warnings || [], events };
 }
 
-export async function rollTurn(sessionId, actionId, fetcher = globalThis.fetch) {
+export async function rollTurn(sessionId, actionId, sequence, fetcher = globalThis.fetch) {
   const body = await requestJson(
     `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(actionId)}/roll`,
-    { method: "POST" },
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sequence }),
+    },
     fetcher,
   );
   if (body?.status === "awaiting_roll") {

@@ -19,6 +19,7 @@ ErrorCode = Literal[
     "INVALID_ITEM",
     "INVALID_LOCATION",
     "DUPLICATE_CHARACTER",
+    "INVALID_CHECK_OUTCOME",
 ]
 
 Ability = Literal[

@@ -135,15 +135,16 @@ test("pending turn and roll responses use the two-phase contract", async () => {
   }));
   assert.equal(planned.pending_turn.chance, 40);
 
-  let rollUrl = "";
-  const rolled = await rollTurn("s1", "a1", async (url) => {
-    rollUrl = url;
+  let rollRequest;
+  const rolled = await rollTurn("s1", "a1", 1, async (url, options) => {
+    rollRequest = { url, options };
     return response({
       status: "resolved", accepted: true, narration: "Opened.", state: state({ session_id: "s1", revision: 1, turn_number: 1 }),
       revision: 1, turn_number: 1, errors: [], warnings: [], events: [], check_outcome: "success",
     });
   });
-  assert.match(rollUrl, /sessions\/s1\/turns\/a1\/roll$/);
+  assert.match(rollRequest.url, /sessions\/s1\/turns\/a1\/roll$/);
+  assert.deepEqual(JSON.parse(rollRequest.options.body), { sequence: 1 });
   assert.equal(rolled.status, "resolved");
 });
 
@@ -211,6 +212,12 @@ test("API errors distinguish missing sessions, DM failures, and network failures
   await assert.rejects(
     () => fetchSessionState("missing", async () => response({}, { ok: false, status: 404 })),
     (error) => error instanceof ApiError && error.code === "not_found" && error.status === 404,
+  );
+  await assert.rejects(
+    () => submitTurn("s1", {}, async () => response(
+      { detail: { code: "PENDING_CHECK" } }, { ok: false, status: 409 },
+    )),
+    (error) => error instanceof ApiError && error.code === "PENDING_CHECK" && error.status === 409,
   );
   await assert.rejects(
     () => submitTurn("s1", {}, async () => response({}, { ok: false, status: 409 })),

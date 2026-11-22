@@ -178,10 +178,16 @@ class TurnOrchestrator:
         resolved_checks: Sequence[object],
         *,
         rules_failed: bool = False,
+        declared_outcome: str | None = None,
     ) -> TurnOutcome:
         commands = to_commands(state, response)
         result = apply_action(
-            state, action, commands, dice, resolved_checks=tuple(resolved_checks),
+            state,
+            action,
+            commands,
+            dice,
+            resolved_checks=tuple(resolved_checks),
+            declared_outcome=declared_outcome,
         )
         if not result.accepted:
             return TurnOutcome(

@@ -9,6 +9,7 @@ import backend.main as backend
 from ai_dm.errors import ProviderError
 from ai_dm.models import CampaignStartResponse, StateDelta, TurnResponse
 from backend.storage import SQLiteSessionStore
+from backend.tests.helpers import create_hero
 from integration.factory import build_orchestrator
 
 PLOT = "the abbot feeds the village to the crypt"
@@ -61,6 +62,7 @@ class CampaignStartApiTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.reset_memory()
+        self.hero_ids = {}
         self.client = TestClient(backend.app)
         self.addCleanup(self.client.close)
         self.addCleanup(backend.app.dependency_overrides.clear)
@@ -78,11 +80,15 @@ class CampaignStartApiTests(unittest.TestCase):
     def new_session(self, **body):
         response = self.client.post("/sessions", json={"name": "Quest", **body})
         self.assertEqual(response.status_code, 200)
-        return response.json()["id"]
+        session_id = response.json()["id"]
+        hero = create_hero(self.client, session_id)
+        self.hero_ids[session_id] = hero["id"]
+        return session_id
 
     def turn(self, session_id, text="Я осматриваюсь", **extra):
         return self.client.post(
-            f"/sessions/{session_id}/turns", json={"character_id": "hero", "text": text, **extra}
+            f"/sessions/{session_id}/turns",
+            json={"character_id": self.hero_ids[session_id], "text": text, **extra},
         )
 
     def test_the_campaign_endpoint_writes_stores_and_hides_the_plot(self):
@@ -94,7 +100,7 @@ class CampaignStartApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual((body["created"], body["title"], body["intro"]), (True, "Склеп некроманта", INTRO))
         self.assertEqual(body["state"]["location"], "Затопленный склеп")
-        self.assertEqual(body["state"]["revision"], 1)
+        self.assertEqual(body["state"]["revision"], 2)
         self.assertEqual([entry["kind"] for entry in body["state"]["log"]], ["master"], "no empty player line")
         self.assertNotIn(PLOT, response.text)
         request = dm.campaigns[0]
@@ -110,7 +116,7 @@ class CampaignStartApiTests(unittest.TestCase):
         sid = self.new_session()
         self.client.post(f"/sessions/{sid}/campaign", json={})
         again = self.client.post(f"/sessions/{sid}/campaign", json={}).json()
-        self.assertEqual((again["created"], again["title"], again["state"]["revision"]), (False, "Склеп некроманта", 1))
+        self.assertEqual((again["created"], again["title"], again["state"]["revision"]), (False, "Склеп некроманта", 2))
         self.assertEqual(len(dm.campaigns), 1)
 
     def test_a_default_theme_is_used_when_none_is_sent(self):
@@ -121,7 +127,7 @@ class CampaignStartApiTests(unittest.TestCase):
     def test_the_first_turn_of_a_new_game_starts_the_campaign_and_later_turns_use_it(self):
         dm = self.use(WritingDM())
         sid = self.new_session()
-        first = self.turn(sid, expected_revision=0)
+        first = self.turn(sid, expected_revision=1)
         second = self.turn(sid, "Я иду дальше", expected_revision=first.json()["revision"])
 
         self.assertEqual((first.status_code, first.json()["accepted"]), (200, True))
@@ -131,19 +137,19 @@ class CampaignStartApiTests(unittest.TestCase):
             self.assertEqual(request.hidden_plot, PLOT)
             self.assertEqual(request.game_state.room_context, "Вода по колено, в центре зала саркофаг.")
             self.assertEqual(request.game_state.location, "Затопленный склеп")
-        self.assertEqual(second.json()["revision"], 3, "campaign start + two turns")
+        self.assertEqual(second.json()["revision"], 4, "character + campaign start + two turns")
         self.assertNotIn(PLOT, first.text + second.text)
 
     def test_a_client_that_saw_revision_zero_is_not_rejected_because_the_campaign_moved_it(self):
         self.use(WritingDM())
         sid = self.new_session()
-        self.assertTrue(self.turn(sid, expected_revision=0).json()["accepted"])
+        self.assertTrue(self.turn(sid, expected_revision=1).json()["accepted"])
 
     def test_a_stale_client_is_still_rejected_after_the_campaign_started(self):
         self.use(WritingDM())
         sid = self.new_session()
-        self.turn(sid, expected_revision=0)
-        stale = self.turn(sid, "Ещё раз", expected_revision=0).json()
+        self.turn(sid, expected_revision=1)
+        stale = self.turn(sid, "Ещё раз", expected_revision=1).json()
         self.assertFalse(stale["accepted"])
         self.assertEqual([error["code"] for error in stale["errors"]], ["STALE_REVISION"])
 
@@ -168,7 +174,7 @@ class CampaignStartApiTests(unittest.TestCase):
         failed = self.client.post(f"/sessions/{sid}/campaign", json={})
         self.assertEqual(failed.status_code, 502)
         self.assertIn("402", failed.json()["detail"])
-        self.assertEqual((self.store.load_campaign(sid)["started"], backend.game_states[sid].revision), (False, 0))
+        self.assertEqual((self.store.load_campaign(sid)["started"], backend.game_states[sid].revision), (False, 1))
         self.assertTrue(self.client.post(f"/sessions/{sid}/campaign", json={}).json()["created"])
         self.assertEqual(len(dm.campaigns), 2)
 

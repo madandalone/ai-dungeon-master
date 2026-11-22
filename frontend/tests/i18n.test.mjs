@@ -21,3 +21,11 @@ test("language selection is normalized, persisted, and interpolated", () => {
   assert.equal(getLanguage(), "ru");
   assert.match(storage.getItem("ai-dungeon-master.ui-settings"), /"language":"ru"/);
 });
+
+test("party ability abbreviations are localized", () => {
+  const storage = memoryStorage();
+  setLanguage("ru", storage);
+  assert.equal(t("ability.short.strength"), "СИЛ");
+  setLanguage("en", storage);
+  assert.equal(t("ability.short.strength"), "STR");
+});

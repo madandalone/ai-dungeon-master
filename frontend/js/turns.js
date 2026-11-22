@@ -33,6 +33,15 @@ export function mergeServerState(previous, snapshot, metadata = {}) {
   };
 }
 
+export function replaceServerState(snapshot, metadata = {}) {
+  return normalizePublicState({
+    ...snapshot,
+    connection: "server",
+    revision: metadata.revision ?? snapshot.revision,
+    turn_number: metadata.turn_number ?? snapshot.turn_number,
+  });
+}
+
 export function applyTurnResult(previous, action, result) {
   const state = mergeServerState(previous, result.state, result);
   if (!result.accepted) return state;
@@ -183,6 +192,10 @@ export function failureMessageKey(error) {
     EMPTY_ACTION: "game.error.emptyAction",
     STALE_REVISION: "game.error.staleRevision",
     INVALID_ITEM: "game.error.invalidItem",
+    PENDING_CHECK: "game.error.pendingCheck",
+    ROLL_SEQUENCE_MISMATCH: "game.error.rollSequence",
+    ROLL_ALREADY_STARTED: "game.error.rollStarted",
+    INVALID_DM_RESULT: "game.error.invalidDmResult",
   };
   return keys[code] || "game.error.generic";
 }

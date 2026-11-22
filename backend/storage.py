@@ -401,15 +401,17 @@ class SQLiteSessionStore:
                 ),
             )
 
-            if cursor.rowcount != 1:
-                exists = connection.execute(
-                    "SELECT 1 FROM game_states WHERE session_id = ?",
-                    (session_id,),
-                ).fetchone()
+            if cursor.rowcount == 1:
+                return
 
-                if exists is None:
-                    raise KeyError(f"Unknown session: {session_id}")
+            exists = connection.execute(
+                "SELECT 1 FROM game_states WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
 
-                raise StateRevisionConflict(
-                    f"Unexpected revision for session {session_id}"
-                )
+            if exists is None:
+                raise KeyError(f"Unknown session: {session_id}")
+
+            raise StateRevisionConflict(
+                f"Unexpected revision for session {session_id}"
+            )

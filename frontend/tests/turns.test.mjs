@@ -6,6 +6,7 @@ import {
   createTurnAttempt,
   failureMessageKey,
   mergeServerState,
+  replaceServerState,
   pinnedContext,
   stateChanges,
   turnReceipts,
@@ -25,6 +26,17 @@ test("server refresh preserves the tab chronicle and updates counters", () => {
   const merged = mergeServerState(previous, state({ log: [], revision: 2, turn_number: 2 }));
   assert.equal(merged.log[0].text, "Wait");
   assert.equal(merged.turn_number, 2);
+});
+
+test("full server refresh replaces a stale local chronicle", () => {
+  const snapshot = state({
+    revision: 3,
+    log: [{ kind: "master", character_id: "", text: "Current server event" }],
+  });
+  const replaced = replaceServerState(snapshot);
+  assert.equal(replaced.log.length, 1);
+  assert.equal(replaced.log[0].text, "Current server event");
+  assert.equal(replaced.revision, 3);
 });
 
 test("turn attempt keeps its id across a retry of the same action", () => {
@@ -147,6 +159,8 @@ test("turn receipts fall back to the difference between snapshots", () => {
 test("failure messages never expose raw backend text", () => {
   assert.equal(failureMessageKey({ code: "master_unavailable", message: "secret" }), "game.error.masterUnavailable");
   assert.equal(failureMessageKey({ code: "something_new", message: "secret" }), "game.error.generic");
+  assert.equal(failureMessageKey({ code: "ROLL_SEQUENCE_MISMATCH" }), "game.error.rollSequence");
+  assert.equal(failureMessageKey({ code: "INVALID_DM_RESULT" }), "game.error.invalidDmResult");
 });
 
 test("rules outages become safe non-fatal warnings", () => {

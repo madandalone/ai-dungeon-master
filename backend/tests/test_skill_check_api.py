@@ -16,6 +16,7 @@ from ai_dm.models import (
 from backend.storage import SQLiteSessionStore
 from engine.dice import SequenceSource
 from integration.factory import build_orchestrator
+from backend.tests.helpers import create_hero
 
 
 class CheckDungeonMaster:
@@ -56,6 +57,22 @@ class ChainDungeonMaster(CheckDungeonMaster):
         return super().resolve_check(request, checks, allow_next=allow_next)
 
 
+class InvalidConsequenceDungeonMaster(CheckDungeonMaster):
+    def resolve_check(self, request, checks, *, allow_next):
+        return CheckResolution(
+            status="resolved",
+            outcome="success",
+            response=TurnResponse(
+                narrative="Вы теряете несуществующий предмет.",
+                state_updates=[
+                    StateDelta(character_name="Hero", items_removed=["missing-item"]),
+                ],
+                new_location=None,
+                dm_thoughts="",
+            ),
+        )
+
+
 class SkillCheckAPITests(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory()
@@ -84,10 +101,11 @@ class SkillCheckAPITests(unittest.TestCase):
         self.addCleanup(self.client.close)
         created = self.client.post("/sessions", json={"name": "Checks"})
         self.session_id = created.json()["id"]
+        self.character_id = create_hero(self.client, self.session_id)["id"]
         self.payload = {
             "action_id": "check-1",
-            "expected_revision": 0,
-            "character_id": "hero",
+            "expected_revision": 1,
+            "character_id": self.character_id,
             "text": "Открываю тяжёлую дверь.",
         }
 
@@ -97,7 +115,7 @@ class SkillCheckAPITests(unittest.TestCase):
 
         self.assertEqual((first.status_code, repeated.status_code), (202, 202))
         self.assertEqual(first.json()["pending_turn"], repeated.json()["pending_turn"])
-        self.assertEqual(first.json()["revision"], 0)
+        self.assertEqual(first.json()["revision"], 1)
         self.assertEqual(self.client.get(f"/sessions/{self.session_id}/state").json()["pending_turn"]["action_id"], "check-1")
 
         blocked = self.client.post(
@@ -107,13 +125,13 @@ class SkillCheckAPITests(unittest.TestCase):
         self.assertEqual(blocked.status_code, 409)
         self.assertEqual(blocked.json()["detail"]["code"], "PENDING_CHECK")
 
-        resolved = self.client.post(f"/sessions/{self.session_id}/turns/check-1/roll")
-        replayed = self.client.post(f"/sessions/{self.session_id}/turns/check-1/roll")
+        resolved = self.client.post(f"/sessions/{self.session_id}/turns/check-1/roll", json={"sequence": 1})
+        replayed = self.client.post(f"/sessions/{self.session_id}/turns/check-1/roll", json={"sequence": 1})
         self.assertEqual((resolved.status_code, replayed.status_code), (200, 200))
         self.assertEqual(resolved.json(), replayed.json())
         self.assertEqual(resolved.json()["events"][0]["type"], "skill_check_resolved")
         self.assertEqual(resolved.json()["events"][0]["roll"], 12)
-        self.assertEqual(resolved.json()["revision"], 1)
+        self.assertEqual(resolved.json()["revision"], 2)
         self.assertIsNone(self.client.get(f"/sessions/{self.session_id}/state").json()["pending_turn"])
 
     def test_unrolled_check_can_be_cancelled(self):
@@ -130,23 +148,81 @@ class SkillCheckAPITests(unittest.TestCase):
         first = self.client.post(f"/sessions/{self.session_id}/turns", json=self.payload)
         self.assertEqual(first.status_code, 202)
         for expected_sequence in (2, 3):
-            continued = self.client.post(f"/sessions/{self.session_id}/turns/check-1/roll")
+            continued = self.client.post(
+                f"/sessions/{self.session_id}/turns/check-1/roll",
+                json={"sequence": expected_sequence - 1},
+            )
             self.assertEqual(continued.status_code, 202)
             self.assertEqual(continued.json()["pending_turn"]["sequence"], expected_sequence)
-            self.assertEqual(continued.json()["revision"], 0)
-        final = self.client.post(f"/sessions/{self.session_id}/turns/check-1/roll")
+            self.assertEqual(continued.json()["revision"], 1)
+        final = self.client.post(
+            f"/sessions/{self.session_id}/turns/check-1/roll", json={"sequence": 3},
+        )
         self.assertEqual(final.status_code, 200)
         self.assertEqual(len([event for event in final.json()["events"] if event["type"] == "skill_check_resolved"]), 3)
-        self.assertEqual(final.json()["revision"], 1)
+        self.assertEqual(final.json()["revision"], 2)
 
     def test_first_failure_finishes_without_requesting_another_check(self):
         self.roll_value = 1
         self.client.post(f"/sessions/{self.session_id}/turns", json=self.payload)
-        result = self.client.post(f"/sessions/{self.session_id}/turns/check-1/roll")
+        result = self.client.post(
+            f"/sessions/{self.session_id}/turns/check-1/roll", json={"sequence": 1},
+        )
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json()["check_outcome"], "failure")
         self.assertEqual(len([event for event in result.json()["events"] if event["type"] == "skill_check_resolved"]), 1)
         self.assertEqual(result.json()["state"]["characters"][0]["hp"], 9)
+
+    def test_repeated_completed_step_does_not_roll_the_next_check(self):
+        orchestrator = build_orchestrator(
+            dm=ChainDungeonMaster(), rules=backend.FakeRulesProvider(),
+        )
+        backend.app.dependency_overrides[backend.get_orchestrator] = lambda: orchestrator
+        self.client.post(f"/sessions/{self.session_id}/turns", json=self.payload)
+
+        first = self.client.post(
+            f"/sessions/{self.session_id}/turns/check-1/roll", json={"sequence": 1},
+        )
+        backend.sessions.clear()
+        backend.game_states.clear()
+        backend.game_histories.clear()
+        backend.turn_executor = backend.IdempotentExecutor()
+        repeated = self.client.post(
+            f"/sessions/{self.session_id}/turns/check-1/roll", json={"sequence": 1},
+        )
+
+        self.assertEqual((first.status_code, repeated.status_code), (202, 202))
+        self.assertEqual(first.json(), repeated.json())
+        pending = self.store.load_pending_turn(self.session_id)
+        self.assertEqual(len(pending["checks"]), 1)
+        self.assertEqual(pending["check"]["sequence"], 2)
+
+        skipped = self.client.post(
+            f"/sessions/{self.session_id}/turns/check-1/roll", json={"sequence": 3},
+        )
+        self.assertEqual(skipped.status_code, 409)
+        self.assertEqual(skipped.json()["detail"]["code"], "ROLL_SEQUENCE_MISMATCH")
+
+    def test_invalid_dm_consequences_keep_the_saved_roll_retryable(self):
+        orchestrator = build_orchestrator(
+            dm=InvalidConsequenceDungeonMaster(), rules=backend.FakeRulesProvider(),
+        )
+        backend.app.dependency_overrides[backend.get_orchestrator] = lambda: orchestrator
+        self.client.post(f"/sessions/{self.session_id}/turns", json=self.payload)
+
+        first = self.client.post(
+            f"/sessions/{self.session_id}/turns/check-1/roll", json={"sequence": 1},
+        )
+        repeated = self.client.post(
+            f"/sessions/{self.session_id}/turns/check-1/roll", json={"sequence": 1},
+        )
+
+        self.assertEqual((first.status_code, repeated.status_code), (502, 502))
+        self.assertEqual(first.json()["detail"]["code"], "INVALID_DM_RESULT")
+        pending = self.store.load_pending_turn(self.session_id)
+        self.assertEqual(len(pending["checks"]), 1)
+        self.assertEqual(pending["checks"][0]["roll"], 12)
+        self.assertEqual(self.store.load_session(self.session_id)[1].revision, 1)
 
 
 if __name__ == "__main__":
