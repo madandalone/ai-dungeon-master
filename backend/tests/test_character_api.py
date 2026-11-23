@@ -101,6 +101,24 @@ class CharacterAPITests(unittest.TestCase):
         self.assertEqual(state["revision"], 0)
         self.assertEqual(len(state["characters"]), 0)
 
+    def test_duplicate_character_name_does_not_change_state(self):
+        first = self.client.post(
+            f"/sessions/{self.session_id}/characters",
+            json=self.payload(),
+        )
+        self.assertEqual(first.status_code, 200)
+
+        duplicate = self.client.post(
+            f"/sessions/{self.session_id}/characters",
+            json=self.payload(expected_revision=1, name="  эЛиАс  "),
+        )
+
+        self.assertEqual(duplicate.status_code, 422)
+        self.assertEqual(duplicate.json()["detail"]["code"], "DUPLICATE_CHARACTER_NAME")
+        state = self.client.get(f"/sessions/{self.session_id}/state").json()
+        self.assertEqual(state["revision"], 1)
+        self.assertEqual(len(state["characters"]), 1)
+
     def test_unknown_session_returns_not_found(self):
         response = self.client.post(
             "/sessions/missing/characters",

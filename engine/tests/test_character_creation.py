@@ -57,6 +57,18 @@ class CharacterCreationTests(unittest.TestCase):
         self.assertFalse(result.accepted)
         self.assertEqual(result.errors[0].code, "DUPLICATE_CHARACTER")
 
+    def test_duplicate_name_is_rejected_case_insensitively(self):
+        first = add_character(state(), character(), expected_revision=2)
+
+        result = add_character(
+            first.state,
+            character(character_id="another", name="  эЛиАс  "),
+            expected_revision=3,
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.errors[0].code, "DUPLICATE_CHARACTER_NAME")
+
     def test_invalid_character_is_rejected(self):
         result = add_character(state(), character(name="  "), expected_revision=2)
 
