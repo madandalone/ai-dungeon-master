@@ -114,6 +114,38 @@ class SkillCheckProposal(BaseModel):
     reason: str = Field(min_length=1, max_length=240)
 
 
+class CheckDecision(BaseModel):
+    """First, deliberately small step of planning: does this action need an Engine roll, and which one.
+
+    It carries no narration, no state changes and no nested response, so even a small local model has
+    one thing to decide. When `needs_check` is false the optional fields are cleared.
+    """
+
+    needs_check: bool = Field(description="true, если исход действия должен решить бросок кубика в Game Engine")
+    ability: Optional[AbilityName] = Field(
+        None, description="Характеристика действующего персонажа при needs_check: true, иначе null"
+    )
+    difficulty: Optional[DifficultyClass] = Field(
+        None, description="Сложность 5, 10, 15, 20, 25 или 30 при needs_check: true, иначе null"
+    )
+    reason: str = Field("", max_length=240, description="Одно короткое предложение: почему нужна проверка")
+
+    @model_validator(mode="after")
+    def _complete_when_needed(self) -> "CheckDecision":
+        if not self.needs_check:
+            self.ability, self.difficulty, self.reason = None, None, ""
+            return self
+        missing = [name for name in ("ability", "difficulty") if getattr(self, name) is None]
+        if not self.reason.strip():
+            missing.append("reason")
+        if missing:
+            raise ValueError("needs_check true requires " + ", ".join(missing))
+        return self
+
+    def proposal(self) -> "SkillCheckProposal":
+        return SkillCheckProposal(ability=self.ability, difficulty=self.difficulty, reason=self.reason.strip())
+
+
 class TurnPlan(BaseModel):
     status: Literal["resolved", "check"]
     response: Optional[TurnResponse] = None
