@@ -139,13 +139,17 @@ Backend отдаёт JSON. Ошибки ведущего приходят как
 | `DELETE` | `/sessions/{session_id}` | удалить сессию и все её данные |
 | `GET` | `/sessions/{session_id}/state` | публичное состояние: герои, локация, летопись, ожидающая проверка |
 | `POST` | `/sessions/{session_id}/characters` | создать героя: `expected_revision`, `name`, `concept`, `max_hp`, `stats` (шесть характеристик 1-20), `starting_item` |
-| `POST` | `/sessions/{session_id}/campaign` | написать кампанию: необязательные `theme`, `monster`; повтор возвращает `created: false`; `409 CAMPAIGN_UNAVAILABLE`, если ведущий не умеет |
+| `POST` | `/sessions/{session_id}/campaign` | дать сессии сюжет: ведущий пишет его по героям (необязательные `theme`, `monster`) либо принимается готовый `authored` (`title`, `hidden_plot`, `starting_location`, `room_context`, `intro_narrative`); нужен хотя бы один герой (`409 NO_CHARACTERS`); повтор возвращает `created: false`; `409 CAMPAIGN_UNAVAILABLE`, если ведущий не умеет писать кампании и `authored` не передан |
 | `POST` | `/sessions/{session_id}/turns` | ход: `character_id`, `text`, необязательные `action_id`, `expected_revision`; `200` исход или `202 awaiting_roll` |
-| `POST` | `/sessions/{session_id}/turns/{action_id}/roll` | бросить d20 ожидающей проверки (повтор безопасен) |
+| `POST` | `/sessions/{session_id}/turns/{action_id}/roll` | бросить d20 ожидающей проверки: тело `{"sequence": 1}` (номер проверки в цепочке, 1-3); повтор безопасен |
 | `POST` | `/sessions/{session_id}/turns/{action_id}/cancel` | отменить проверку до первого броска |
 | `POST` | `/sessions/{session_id}/actions` | техническое изменение здоровья без модели (`character_id`, `text`, `health_delta`) |
 
-Коды конфликтов: `STALE_REVISION` (клиент отстал от сервера), `PENDING_CHECK` (сначала завершите проверку), `ACTION_ID_REUSED`, `ROLL_ALREADY_STARTED`.
+Коды конфликтов: `NO_CHARACTERS`, `CAMPAIGN_UNAVAILABLE`, `STALE_REVISION` (клиент отстал от сервера), `PENDING_CHECK` (сначала завершите проверку), `ACTION_ID_REUSED`, `ROLL_ALREADY_STARTED`.
+
+## Демо-кампания «Сундук в сторожке»
+
+Минимальная кампания для показа одного настоящего броска: один герой, одна комната, нет врагов и ловушек. Готовый материал и пошаговый сценарий: [docs/demo_campaign.md](docs/demo_campaign.md), данные: [docs/demo_campaign.json](docs/demo_campaign.json). Сюжет передаётся как `authored`, поэтому модель не пишет кампанию и контекст остаётся маленьким.
 
 ## Тесты
 
@@ -160,7 +164,7 @@ python -m unittest discover -s rules_service/tests -p 'test_*.py' -v
 npm run test:frontend                                               # нужен Node.js
 ```
 
-Состояние на момент написания: движок 24, backend 49, интеграция 85 (один тест пропущен без ключа), AI DM 171 и интерфейс 40 тестов проходят. Набор Rules Service содержит 62 теста; проверки качества поиска требуют полной книги правил, а не сокращённого демонстрационного `data/srd.md`.
+Состояние на момент написания: движок 24, AI DM 180, backend 76, интеграция 90 (один тест пропущен без ключа), Rules Service 62, интерфейс 40 тестов, все проходят. Проверки качества поиска правил и часть тестов Rules Service используют полную книгу `data/srd.md` и пропускаются без неё.
 
 Тесты используют заглушку вместо модели, поэтому не требуют ключа и сети. Тесты, опирающиеся на настоящую книгу правил, пропускаются, если нет `data/srd.md`.
 
