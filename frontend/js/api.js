@@ -208,6 +208,16 @@ export async function createSession(name, fetcher = globalThis.fetch) {
   return { id: body.id, name: body.name };
 }
 
+export async function deleteSession(sessionId, fetcher = globalThis.fetch) {
+  const body = await requestJson(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+  }, fetcher);
+  if (body?.status !== "deleted" || body.session_id !== sessionId) {
+    throw new ApiError("invalid_response");
+  }
+  return body;
+}
+
 export async function fetchSessionState(sessionId, fetcher = globalThis.fetch) {
   const body = await requestJson(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/state`, {}, fetcher);
   if (!isPublicState(body)) throw new ApiError("invalid_response");

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  ApiError, createCharacter, createSession, fetchHealth, fetchSessionState,
+  ApiError, createCharacter, createSession, deleteSession, fetchHealth, fetchSessionState,
   normalizePublicEvents, resolveApiBase, rollTurn, submitTurn,
 } from "../js/api.js";
 
@@ -37,6 +37,21 @@ test("health result does not contain user-facing language", async () => {
 
 test("create session validates the response contract", async () => {
   await assert.rejects(() => createSession("Quest", async () => response({ id: 12 })), /invalid_response/);
+});
+
+test("delete session uses an encoded id and validates the response", async () => {
+  let request;
+  const result = await deleteSession("session/1", async (url, options) => {
+    request = { url, options };
+    return response({ status: "deleted", session_id: "session/1" });
+  });
+  assert.match(request.url, /sessions\/session%2F1$/);
+  assert.equal(request.options.method, "DELETE");
+  assert.equal(result.status, "deleted");
+  await assert.rejects(
+    () => deleteSession("s1", async () => response({ status: "ok", session_id: "s1" })),
+    /invalid_response/,
+  );
 });
 
 test("session state uses an encoded id and validates public data", async () => {

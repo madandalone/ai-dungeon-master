@@ -1,5 +1,5 @@
-from typing import Dict, List, Literal, Optional
-from pydantic import BaseModel, Field, model_validator
+from typing import Annotated, Dict, List, Literal, Optional
+from pydantic import BaseModel, Field, RootModel, model_validator
 
 
 AbilityName = Literal[
@@ -114,45 +114,121 @@ class SkillCheckProposal(BaseModel):
     reason: str = Field(min_length=1, max_length=240)
 
 
-class TurnPlan(BaseModel):
-    status: Literal["resolved", "check"]
-    response: Optional[TurnResponse] = None
+class ResolvedTurnPlan(BaseModel):
+    status: Literal["resolved"]
+    response: TurnResponse
     check: Optional[SkillCheckProposal] = None
 
     @model_validator(mode="after")
-    def _matching_payload(self) -> "TurnPlan":
-        if self.status == "resolved":
-            if self.response is None:
-                raise ValueError("resolved plan requires response")
-            self.check = None
-        else:
-            if self.check is None:
-                raise ValueError("check plan requires check")
-            # A small local model can echo a speculative response alongside the check.
-            # It is deliberately discarded before it can reach Engine.
-            self.response = None
+    def _discard_check(self) -> "ResolvedTurnPlan":
+        self.check = None
         return self
 
 
-class CheckResolution(BaseModel):
-    status: Literal["resolved", "check"]
+class PendingTurnPlan(BaseModel):
+    status: Literal["check"]
+    response: Optional[TurnResponse] = None
+    check: SkillCheckProposal
+
+    @model_validator(mode="after")
+    def _discard_speculative_response(self) -> "PendingTurnPlan":
+        # Consequences proposed before Engine rolls are never authoritative.
+        self.response = None
+        return self
+
+
+TurnPlanVariant = Annotated[
+    ResolvedTurnPlan | PendingTurnPlan,
+    Field(discriminator="status"),
+]
+
+
+class TurnPlan(RootModel[TurnPlanVariant]):
+    """Strict planning union whose JSON Schema requires the matching payload."""
+
+    def __init__(self, **data):
+        super().__init__(root=data)
+
+    @property
+    def status(self):
+        return self.root.status
+
+    @property
+    def response(self):
+        return self.root.response
+
+    @response.setter
+    def response(self, value):
+        self.root.response = value
+
+    @property
+    def check(self):
+        return self.root.check
+
+    @check.setter
+    def check(self, value):
+        self.root.check = value
+
+
+class ResolvedCheckResolution(BaseModel):
+    status: Literal["resolved"]
     outcome: Literal["success", "failure"]
-    response: Optional[TurnResponse] = None
+    response: TurnResponse
     check: Optional[SkillCheckProposal] = None
 
     @model_validator(mode="after")
-    def _matching_payload(self) -> "CheckResolution":
-        if self.status == "resolved":
-            if self.response is None:
-                raise ValueError("resolved check requires response")
-            self.check = None
-        else:
-            if self.check is None:
-                raise ValueError("continued check requires check")
-            self.response = None
-        if self.outcome == "failure" and self.status != "resolved":
-            raise ValueError("a failed check must resolve the turn")
+    def _discard_check(self) -> "ResolvedCheckResolution":
+        self.check = None
         return self
+
+
+class ContinuedCheckResolution(BaseModel):
+    status: Literal["check"]
+    outcome: Literal["success"]
+    response: Optional[TurnResponse] = None
+    check: SkillCheckProposal
+
+    @model_validator(mode="after")
+    def _discard_speculative_response(self) -> "ContinuedCheckResolution":
+        self.response = None
+        return self
+
+
+CheckResolutionVariant = Annotated[
+    ResolvedCheckResolution | ContinuedCheckResolution,
+    Field(discriminator="status"),
+]
+
+
+class CheckResolution(RootModel[CheckResolutionVariant]):
+    """Strict post-roll union; a failed check cannot request another check."""
+
+    def __init__(self, **data):
+        super().__init__(root=data)
+
+    @property
+    def status(self):
+        return self.root.status
+
+    @property
+    def outcome(self):
+        return self.root.outcome
+
+    @property
+    def response(self):
+        return self.root.response
+
+    @response.setter
+    def response(self, value):
+        self.root.response = value
+
+    @property
+    def check(self):
+        return self.root.check
+
+    @check.setter
+    def check(self, value):
+        self.root.check = value
 
 
 # --- Модели для функции старта кампании ---

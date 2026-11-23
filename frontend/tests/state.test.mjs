@@ -3,7 +3,8 @@ import test from "node:test";
 
 import {
   LEGACY_STORAGE_KEY, STORAGE_KEY, activateSession, activePublicState, emptyPublicState,
-  loadSessionStore, migrateLegacyState, normalizePublicState, putSession, saveSessionStore,
+  loadSessionStore, migrateLegacyState, normalizePublicState, putSession, removeSession,
+  saveSessionStore,
 } from "../js/state.js";
 
 function memoryStorage(initial = {}) {
@@ -42,6 +43,17 @@ test("sessions keep independent heroes and logs", () => {
   store = activateSession(store, "one");
   assert.equal(activePublicState(store).log[0].text, "First");
   assert.equal(activePublicState(store).characters.length, 0);
+});
+
+test("removing sessions preserves an unrelated active session and selects a fallback", () => {
+  let store = putSession(undefined, emptyPublicState("one", "One", "server"));
+  store = putSession(store, emptyPublicState("two", "Two", "server"));
+  store = removeSession(store, "one");
+  assert.equal(store.activeSessionId, "two");
+  assert.deepEqual(Object.keys(store.sessions), ["two"]);
+  store = removeSession(store, "two");
+  assert.equal(store.activeSessionId, null);
+  assert.deepEqual(store.sessions, {});
 });
 
 test("saved store can be loaded again", () => {

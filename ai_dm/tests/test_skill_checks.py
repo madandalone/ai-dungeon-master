@@ -6,9 +6,11 @@ from unittest.mock import Mock
 from ai_dm.dm_engine import AIDungeonMaster
 from ai_dm.models import (
     CharacterState,
+    CheckResolution,
     CheckResult,
     GameState,
     TurnRequest,
+    TurnPlan,
 )
 
 
@@ -40,6 +42,25 @@ def request():
 
 
 class SkillCheckGenerationTests(unittest.TestCase):
+    def test_structured_schemas_require_the_payload_for_each_status(self):
+        for model in (TurnPlan, CheckResolution):
+            with self.subTest(model=model.__name__):
+                schema = model.model_json_schema()
+                branches = [
+                    schema["$defs"][entry["$ref"].rsplit("/", 1)[-1]]
+                    for entry in schema["oneOf"]
+                ]
+                check_branch = next(
+                    branch for branch in branches
+                    if branch["properties"]["status"].get("const") == "check"
+                )
+                self.assertIn("check", check_branch["required"])
+
+        with self.assertRaisesRegex(ValueError, "check"):
+            TurnPlan(status="check")
+        with self.assertRaisesRegex(ValueError, "check"):
+            CheckResolution(status="check", outcome="success")
+
     def test_plan_can_request_a_valid_engine_check(self):
         client = Mock()
         client.chat.completions.create.return_value = completion({
@@ -52,6 +73,34 @@ class SkillCheckGenerationTests(unittest.TestCase):
         call = client.chat.completions.create.call_args.kwargs
         self.assertEqual(call["response_format"]["type"], "json_schema")
         self.assertEqual(call["response_format"]["json_schema"]["name"], "TurnPlan")
+        prompt = call["messages"][1]["content"]
+        self.assertIn('status="check"', prompt)
+        self.assertIn("check с обязательными полями", prompt)
+        self.assertNotIn("Тогда верни requires_check: true", prompt)
+        self.assertNotIn(json.dumps(TurnPlan.model_json_schema(), ensure_ascii=False, indent=2), prompt)
+
+    def test_missing_check_is_repaired_with_the_strict_contract(self):
+        client = Mock()
+        client.chat.completions.create.side_effect = [
+            completion({"status": "check"}),
+            completion({
+                "status": "check",
+                "response": None,
+                "check": {
+                    "ability": "strength",
+                    "difficulty": 15,
+                    "reason": "Дверь тяжёлая.",
+                },
+            }),
+        ]
+
+        result = AIDungeonMaster(client).plan_turn(request())
+
+        self.assertEqual(result.check.ability, "strength")
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        repair = client.chat.completions.create.call_args_list[1].kwargs["messages"][-1]["content"]
+        self.assertIn("check", repair)
+        self.assertIn("Field required", repair)
 
     def test_speculative_response_is_discarded_when_check_is_requested(self):
         client = Mock()
