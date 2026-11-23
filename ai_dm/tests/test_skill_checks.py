@@ -136,6 +136,16 @@ class SkillCheckGenerationTests(unittest.TestCase):
         self.assertIn("Проверка характеристики в этом ходе не требуется", narration_prompt)
         self.assertNotIn("Сначала реши, нужна ли проверка", narration_prompt)
 
+    def test_the_word_try_alone_does_not_force_a_roll_on_a_safe_action(self):
+        client = Mock()
+        client.chat.completions.create.side_effect = [
+            completion(NO_CHECK),
+            completion(safe_response("Вы спокойно осматриваете зал.")),
+        ]
+        safe = request().model_copy(update={"player_action": "Пытаюсь осмотреть зал."})
+        result = AIDungeonMaster(client).plan_turn(safe)
+        self.assertEqual((result.status, result.response.narrative), ("resolved", "Вы спокойно осматриваете зал."))
+
     def test_a_narration_that_asks_for_a_check_after_the_decision_is_repaired(self):
         client = Mock()
         wants_check = safe_response("Вы осматриваете зал.")

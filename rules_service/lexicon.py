@@ -95,6 +95,9 @@ def _normalize(text: str) -> str:
 
 _STEMS = [(_normalize(stem), terms) for stems, terms in ENTRIES for stem in stems]
 _WORD_RE = re.compile(r"[а-я]+")
+# «тону» описывает состояние персонажа, но как подстрока встречается в словах
+# «затонувший» и «затонувший храм», где правила удушья не относятся к действию.
+_WHOLE_WORD_STEMS = frozenset({"тону"})
 
 
 def expand_query(query: str) -> str:
@@ -110,7 +113,7 @@ def expand_query(query: str) -> str:
     for stem, terms in _STEMS:
         if " " in stem:
             matched = stem in text
-        elif len(stem) < MIN_STEM_LENGTH:
+        elif len(stem) < MIN_STEM_LENGTH or stem in _WHOLE_WORD_STEMS:
             matched = stem in tokens
         else:
             matched = any(stem in token for token in tokens)
