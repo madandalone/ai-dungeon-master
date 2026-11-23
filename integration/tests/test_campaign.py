@@ -158,3 +158,52 @@ class OrchestratorCampaignTests(unittest.TestCase):
         self.assertFalse(orchestrator.can_start_campaign)
         with self.assertRaises(ValueError):
             orchestrator.start_campaign(state(), "Склеп", Dice(SequenceSource([10])))
+
+
+class AuthoredCampaignTests(unittest.TestCase):
+    def authored(self, **overrides):
+        from integration import Campaign
+
+        fields = dict(title="Сундук в сторожке", hidden_plot="В сундуке лежит медный ключ.",
+                      starting_location="Сторожка", room_context="Одна комната, стол и сундук.",
+                      intro_narrative="Вы в пустой сторожке.")
+        return Campaign(**{**fields, **overrides})
+
+    def test_moves_the_party_through_the_engine_without_asking_any_dm(self):
+        from integration import author_campaign
+
+        initial = state(revision=2)
+        result = author_campaign(initial, self.authored(), Dice(SequenceSource([10])))
+        self.assertEqual((result.state.location_id, result.state.revision), ("Сторожка", 3))
+        self.assertEqual(result.campaign.hidden_plot, "В сундуке лежит медный ключ.")
+        self.assertEqual(initial.location_id, "start")
+
+    def test_blank_fields_are_a_caller_bug(self):
+        from integration import author_campaign
+
+        for field in ("title", "hidden_plot", "starting_location", "room_context", "intro_narrative"):
+            with self.subTest(field=field), self.assertRaises(ValueError) as caught:
+                author_campaign(state(), self.authored(**{field: "  "}), Dice(SequenceSource([10])))
+            self.assertIn(field, str(caught.exception))
+
+    def test_a_party_is_required(self):
+        from integration import author_campaign
+
+        with self.assertRaises(ValueError):
+            author_campaign(GameState("s1", 0, 0, "start", (), {}), self.authored(), Dice(SequenceSource([10])))
+
+    def test_the_orchestrator_offers_it_even_to_a_dm_that_cannot_write_campaigns(self):
+        from integration import TurnOrchestrator
+
+        class TurnsOnly:
+            def process_turn(self, request):
+                raise AssertionError("not used")
+
+        class NoRules:
+            def get_rules(self, query):
+                return ""
+
+        orchestrator = TurnOrchestrator(TurnsOnly(), NoRules())
+        self.assertFalse(orchestrator.can_start_campaign)
+        result = orchestrator.use_authored_campaign(state(), self.authored(), Dice(SequenceSource([10])))
+        self.assertEqual(result.state.location_id, "Сторожка")

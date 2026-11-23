@@ -242,3 +242,118 @@ class CampaignStorageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AuthoredCampaignApiTests(CampaignStartApiTests):
+    """Authored campaigns, the empty party and the .env loading, on the same fixtures."""
+
+    AUTHORED = {
+        "title": "Сундук в сторожке",
+        "hidden_plot": "В сундуке лежит медный ключ. Других секретов нет.",
+        "starting_location": "Сторожка",
+        "room_context": "Одна комната, деревянный стол и старый сундук с заклинившей крышкой.",
+        "intro_narrative": "Вы стоите в небольшой пустой сторожке. Перед вами старый сундук.",
+    }
+
+    def test_an_authored_campaign_is_stored_without_calling_the_dm(self):
+        dm = self.use(WritingDM())
+        sid = self.new_session()
+        response = self.client.post(f"/sessions/{sid}/campaign", json={"authored": self.AUTHORED})
+        body = response.json()
+
+        self.assertEqual((response.status_code, body["created"], body["title"]), (200, True, "Сундук в сторожке"))
+        self.assertEqual(dm.campaigns, [])
+        self.assertEqual(body["state"]["location"], "Сторожка")
+        self.assertEqual([e["text"] for e in body["state"]["log"]], [self.AUTHORED["intro_narrative"]])
+        self.assertNotIn(self.AUTHORED["hidden_plot"], response.text)
+        record = self.store.load_campaign(sid)
+        self.assertEqual((record["hidden_plot"], record["room_context"]), (
+            self.AUTHORED["hidden_plot"], self.AUTHORED["room_context"]))
+
+    def test_the_authored_plot_and_room_reach_every_turn(self):
+        dm = self.use(WritingDM())
+        sid = self.new_session()
+        self.client.post(f"/sessions/{sid}/campaign", json={"authored": self.AUTHORED})
+        self.assertTrue(self.turn(sid).json()["accepted"])
+        request = dm.turns[0]
+        self.assertEqual(request.hidden_plot, self.AUTHORED["hidden_plot"])
+        self.assertEqual(request.game_state.room_context, self.AUTHORED["room_context"])
+        self.assertEqual(dm.campaigns, [])
+
+    def test_an_authored_campaign_works_with_a_dm_that_cannot_write_campaigns(self):
+        self.use(StubDM())
+        sid = self.new_session()
+        created = self.client.post(f"/sessions/{sid}/campaign", json={"authored": self.AUTHORED})
+        self.assertEqual((created.status_code, created.json()["created"]), (200, True))
+
+    def test_a_second_request_keeps_the_first_campaign(self):
+        self.use(StubDM())
+        sid = self.new_session()
+        self.client.post(f"/sessions/{sid}/campaign", json={"authored": self.AUTHORED})
+        other = {**self.AUTHORED, "title": "Другая", "hidden_plot": "Иной сюжет."}
+        again = self.client.post(f"/sessions/{sid}/campaign", json={"authored": other}).json()
+        self.assertEqual((again["created"], again["title"]), (False, "Сундук в сторожке"))
+        self.assertEqual(self.store.load_campaign(sid)["hidden_plot"], self.AUTHORED["hidden_plot"])
+
+    def test_incomplete_or_blank_authored_fields_are_rejected_by_validation(self):
+        self.use(StubDM())
+        sid = self.new_session()
+        for field in self.AUTHORED:
+            for bad in ("", "   "):
+                response = self.client.post(f"/sessions/{sid}/campaign", json={"authored": {**self.AUTHORED, field: bad}})
+                self.assertEqual(response.status_code, 422, (field, bad))
+        missing = {k: v for k, v in self.AUTHORED.items() if k != "hidden_plot"}
+        self.assertEqual(self.client.post(f"/sessions/{sid}/campaign", json={"authored": missing}).status_code, 422)
+        self.assertFalse(self.store.load_campaign(sid)["started"])
+
+    def test_a_campaign_needs_a_hero_and_says_so_instead_of_failing(self):
+        self.use(WritingDM())
+        empty = self.client.post("/sessions", json={"name": "Пустая"}).json()["id"]
+        for body in ({}, {"authored": self.AUTHORED}):
+            response = self.client.post(f"/sessions/{empty}/campaign", json=body)
+            self.assertEqual((response.status_code, response.json()["detail"]["code"]), (409, "NO_CHARACTERS"), body)
+        self.assertFalse(self.store.load_campaign(empty)["started"])
+
+    def test_a_turn_in_a_session_without_heroes_is_rejected_as_a_normal_turn_not_a_crash(self):
+        dm = self.use(WritingDM())
+        empty = self.client.post("/sessions", json={"name": "Пустая"}).json()["id"]
+        response = self.client.post(f"/sessions/{empty}/turns", json={"character_id": "nobody", "text": "Привет"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["errors"][0]["code"], "INVALID_CHARACTER")
+        self.assertEqual(dm.campaigns, [], "no campaign is written for an empty party")
+
+
+class EnvironmentLoadingTests(unittest.TestCase):
+    """python-dotenv finds .env next to the calling code (the repository root), not in the working directory."""
+
+    def settings_with_dotenv(self, environment):
+        import os
+
+        import dotenv
+        from integration import RulesSettings
+
+        original = dotenv.load_dotenv
+        with TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            env_file.write_text("RULES_BOOK_PATH=from-dotenv.md\nRULES_MODE=keyword\n", encoding="utf-8")
+            loader = lambda *args, **kwargs: original(dotenv_path=env_file)
+            with patch.dict(os.environ, environment, clear=True), patch("dotenv.load_dotenv", loader):
+                return RulesSettings.from_env()
+
+    def test_settings_come_from_dotenv_when_the_environment_has_none(self):
+        self.assertEqual(self.settings_with_dotenv({}).book_path, Path("from-dotenv.md"))
+
+    def test_the_environment_wins_over_dotenv(self):
+        self.assertEqual(self.settings_with_dotenv({"RULES_BOOK_PATH": "explicit.md"}).book_path, Path("explicit.md"))
+
+    def test_an_explicit_mapping_never_touches_dotenv(self):
+        from integration import RulesSettings
+
+        with patch("dotenv.load_dotenv", side_effect=AssertionError("must not be called")):
+            self.assertEqual(RulesSettings.from_env({"RULES_BOOK_PATH": "b.md"}).book_path, Path("b.md"))
+
+    def test_the_backend_loads_dotenv_before_anything_reads_the_environment(self):
+        import inspect
+
+        source = inspect.getsource(backend)
+        self.assertLess(source.index("load_dotenv()"), source.index("app = FastAPI("))
