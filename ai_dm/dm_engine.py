@@ -19,6 +19,7 @@ from ai_dm.errors import ConfigurationError, InvalidResponseError
 from ai_dm.models import (
     CampaignStartRequest,
     CampaignStartResponse,
+    CheckDecision,
     CheckResolution,
     CheckResult,
     TurnRequest,
@@ -30,6 +31,7 @@ from ai_dm.prompts import PromptTemplates
 from ai_dm.memory import select_history
 from ai_dm.validation import (
     validate_campaign,
+    validate_check_decision,
     validate_check_resolution,
     validate_turn,
     validate_turn_plan,
@@ -37,6 +39,24 @@ from ai_dm.validation import (
 
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
 logger = logging.getLogger(__name__)
+_ERROR_LIMIT = 400
+
+
+def _summarize_error(exc: Exception) -> str:
+    """One short line about why a model answer was rejected; never the answer itself."""
+    if isinstance(exc, ValidationError):
+        text = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or '<root>'}: {error['msg']}"
+            for error in exc.errors(include_input=False, include_url=False)
+        )
+    else:
+        text = str(exc)
+    return " ".join(text.split())[:_ERROR_LIMIT]
+
+
+def _log_raw_enabled() -> bool:
+    """AI_DM_LOG_RAW=1 logs full prompts and raw answers. For local debugging only: they contain the hidden plot."""
+    return os.getenv("AI_DM_LOG_RAW", "").strip() == "1"
 
 
 def _create_client() -> OpenAI:
@@ -107,6 +127,7 @@ class AIDungeonMaster:
         *,
         templates: PromptTemplates,
         history_count: int = 0,
+        operation: str = "generate",
     ) -> ResponseModel:
         client = without_sdk_retries(self._get_client())
         limits = GenerationLimits.from_env()
@@ -129,6 +150,9 @@ class AIDungeonMaster:
             messages, history_count = fit_messages(
                 build_messages, history_count, limits.max_context_chars, repair=repair_used,
             )
+            if _log_raw_enabled():
+                logger.info("AI REQUEST operation=%s attempt=%d messages=%s", operation, attempt + 1,
+                            json.dumps(messages, ensure_ascii=False))
             try:
                 response = client.chat.completions.create(
                     model=model,
@@ -158,6 +182,9 @@ class AIDungeonMaster:
             raw = None
             try:
                 raw = _response_text(response)
+                if _log_raw_enabled():
+                    logger.info("RAW AI RESPONSE operation=%s attempt=%d finish_reason=%s raw=%s", operation,
+                                attempt + 1, getattr(response.choices[0], "finish_reason", None), raw)
                 if getattr(response.choices[0], "finish_reason", None) == "length":
                     raise ValueError("Достигнут лимит токенов ответа. Сократи текст и верни полный JSON.")
                 result = response_model.model_validate_json(_strip_json_fence(raw))
@@ -185,8 +212,12 @@ class AIDungeonMaster:
                     if isinstance(exc, ValidationError)
                     else str(exc)
                 )
+                logger.warning(
+                    "invalid AI response operation=%s model=%s schema=%s attempt=%d repair=%s error=%s",
+                    operation, model, response_model.__name__, attempt + 1,
+                    "failed" if repair_used else "next", _summarize_error(exc),
+                )
                 if repair_used or attempt == 2:
-                    logger.debug("invalid AI response model=%s details=%s", model, details)
                     raise InvalidResponseError(
                         "Dungeon Master returned an invalid response after one repair attempt."
                     ) from exc
@@ -210,6 +241,7 @@ class AIDungeonMaster:
         return self._generate(
             templates.campaign_prompt(req, monster_stats), CampaignStartResponse,
             validate_response=partial(validate_campaign, request=req), templates=templates,
+            operation="campaign",
         )
 
     def process_turn(self, request: TurnRequest) -> TurnResponse:
@@ -219,27 +251,43 @@ class AIDungeonMaster:
         return self._generate(
             partial(templates.turn_prompt, request, history), TurnResponse,
             validate_response=partial(validate_turn, request=request),
-            templates=templates, history_count=history.count,
+            templates=templates, history_count=history.count, operation="turn",
         )
 
     def plan_turn(self, request: TurnRequest) -> TurnPlan:
-        """Either resolve a safe action or request one Engine-owned ability check."""
+        """Either resolve a safe action or request one Engine-owned ability check.
+
+        Two small requests instead of one large union: first only the decision "does this action need a
+        roll, and which" (no history, no plot, no nested response), then, if no roll is needed, the narration
+        with the roll question already answered. A model that must fill a nested `check` object next to a
+        full `response` object in one schema tends to name a status and forget the payload.
+        """
         templates = PromptTemplates.load()
+        decision = self._generate(
+            templates.decision_prompt(request), CheckDecision,
+            validate_response=partial(validate_check_decision, request=request),
+            templates=templates, operation="plan.decision",
+        )
+        if decision.needs_check:
+            return TurnPlan(status="check", check=decision.proposal())
+
         history = select_history(request)
 
-        def prompt(count: int) -> str:
-            return templates.turn_prompt(
-                request,
-                history,
-                count,
-                check_text=templates.plan_check_prompt(request),
-            )
+        def validate_narration(response: TurnResponse) -> TurnResponse:
+            response = validate_turn(response, request=request)
+            if response.requires_check or response.check is not None:
+                raise ValueError(
+                    "Проверка в этом ходе уже не требуется. Верни requires_check: false и check: null."
+                )
+            return response
 
-        return self._generate(
-            prompt, TurnPlan,
-            validate_response=partial(validate_turn_plan, request=request),
-            templates=templates, history_count=history.count,
+        response = self._generate(
+            partial(templates.turn_prompt, request, history, check_block=templates.no_check),
+            TurnResponse,
+            validate_response=validate_narration,
+            templates=templates, history_count=history.count, operation="plan.narration",
         )
+        return TurnPlan(status="resolved", response=response)
 
     def resolve_check(
         self, request: TurnRequest, checks: list[CheckResult], *, allow_next: bool,
@@ -248,33 +296,14 @@ class AIDungeonMaster:
         templates = PromptTemplates.load()
         history = select_history(request)
         expected = "success" if all(check.success for check in checks) else "failure"
-
-        def prompt(count: int) -> str:
-            base = templates.turn_prompt(
-                request,
-                history,
-                count,
-                check_text=templates.resolution_check,
-            )
-            facts = json.dumps([check.model_dump() for check in checks], ensure_ascii=False)
-            continuation = (
-                "После успеха можно запросить следующую значимую проверку."
-                if allow_next and expected == "success"
-                else "Цепочку продолжать нельзя; верни status=resolved."
-            )
-            return base + (
-                "\n\n### ФАКТЫ ПРОВЕРОК ENGINE:\n" + facts + "\n"
-                "Эти значения окончательны. outcome обязан быть " + expected + ". "
-                + continuation + " При финальном ответе последствия и повествование должны "
-                "соответствовать исходу; провал не описывай как выполненное действие."
-            )
+        block = templates.outcome_block([check.model_dump() for check in checks], expected, allow_next)
 
         return self._generate(
-            prompt, CheckResolution,
+            partial(templates.turn_prompt, request, history, check_block=block), CheckResolution,
             validate_response=partial(
                 validate_check_resolution, request=request, expected_outcome=expected,
             ),
-            templates=templates, history_count=history.count,
+            templates=templates, history_count=history.count, operation="resolve_check",
         )
 
 
