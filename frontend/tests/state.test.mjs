@@ -88,3 +88,29 @@ test("pending check survives local normalization for page reload", () => {
   const normalized = normalizePublicState({ ...emptyPublicState("s1", "Quest", "server"), pending_turn: pending });
   assert.deepEqual(normalized.pending_turn, pending);
 });
+
+test("campaign setup and generated title survive local normalization", () => {
+  const normalized = normalizePublicState({
+    ...emptyPublicState("s1", "Quest", "server"),
+    campaign: {
+      started: true,
+      title: "The Living Oven",
+      theme: "Dark bakery",
+      opening_hook: "The oven whispers.",
+    },
+  });
+  assert.deepEqual(normalized.campaign, {
+    started: true,
+    title: "The Living Oven",
+    theme: "Dark bakery",
+    opening_hook: "The oven whispers.",
+  });
+});
+
+test("old cached sessions receive an unstarted campaign safely", () => {
+  const normalized = normalizePublicState({
+    session_id: "old", session_name: "Old", connection: "server",
+    revision: 0, turn_number: 0, location: "start", characters: [], log: [],
+  });
+  assert.deepEqual(normalized.campaign, { started: false, title: "", theme: "", opening_hook: "" });
+});

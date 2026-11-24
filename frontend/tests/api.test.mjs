@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   ApiError, createCharacter, createSession, deleteSession, fetchHealth, fetchSessionState,
-  normalizePublicEvents, resolveApiBase, rollTurn, submitTurn,
+  normalizePublicEvents, resolveApiBase, rollTurn, startCampaign, submitTurn,
 } from "../js/api.js";
 
 function response(body, { ok = true, status = 200 } = {}) {
@@ -37,6 +37,45 @@ test("health result does not contain user-facing language", async () => {
 
 test("create session validates the response contract", async () => {
   await assert.rejects(() => createSession("Quest", async () => response({ id: 12 })), /invalid_response/);
+});
+
+test("create session sends the story setup", async () => {
+  let request;
+  const created = await createSession({
+    name: "Bakery",
+    theme: "Dark fantasy bakery",
+    openingHook: "The oven whispers at midnight.",
+  }, async (url, options) => {
+    request = { url, options };
+    return response({ id: "s1", name: "Bakery" });
+  });
+  assert.deepEqual(JSON.parse(request.options.body), {
+    name: "Bakery",
+    theme: "Dark fantasy bakery",
+    opening_hook: "The oven whispers at midnight.",
+  });
+  assert.deepEqual(created, { id: "s1", name: "Bakery" });
+});
+
+test("campaign start is explicit and returns the generated opening", async () => {
+  let request;
+  const result = await startCampaign("session/1", async (url, options) => {
+    request = { url, options };
+    return response({
+      created: true,
+      title: "The Living Oven",
+      intro: "The oven opens its eyes.",
+      state: state({
+        session_id: "session/1",
+        location: "Old bakery",
+        campaign: { started: true, title: "The Living Oven", theme: "Bakery", opening_hook: "A whisper" },
+      }),
+    });
+  });
+  assert.match(request.url, /sessions\/session%2F1\/campaign$/);
+  assert.equal(request.options.method, "POST");
+  assert.equal(request.options.body, "{}");
+  assert.equal(result.state.location, "Old bakery");
 });
 
 test("delete session uses an encoded id and validates the response", async () => {

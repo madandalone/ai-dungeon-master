@@ -1,8 +1,8 @@
 import {
   activateSession, activePublicState, loadSessionStore, putSession,
   removeSession, saveSessionStore,
-} from "./state.js?v=20261124-1";
-import { SETTINGS_KEY } from "./i18n.js?v=20261124-1";
+} from "./state.js?v=20261124-2";
+import { SETTINGS_KEY } from "./i18n.js?v=20261124-2";
 
 const SECTIONS = new Set(["game", "characters", "world", "session"]);
 
@@ -24,7 +24,7 @@ export class AppStore {
     this.sidebarCollapsed = Boolean(settings.sidebarCollapsed);
     this.selectedBySession = { ...(settings.selectedBySession || {}) };
     this.backend = "checking";
-    this.operation = { session: null, character: null, turn: "idle", sync: false, deleting: false };
+    this.operation = { session: null, character: null, campaign: null, turn: "idle", sync: false, deleting: false };
     this.pendingAttempt = null;
     this.feedback = null;
     this.hudExpanded = false;
@@ -121,7 +121,7 @@ export class AppStore {
 
   isBusy() {
     return Boolean(
-      this.operation.session || this.operation.character || this.operation.sync
+      this.operation.session || this.operation.character || this.operation.campaign || this.operation.sync
       || this.operation.deleting || this.operation.turn !== "idle"
     );
   }

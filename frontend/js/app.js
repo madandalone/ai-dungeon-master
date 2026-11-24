@@ -1,12 +1,12 @@
-import { ApiClient } from "./api.js?v=20261124-1";
-import { AppStore } from "./app-store.js?v=20261124-1";
-import { AppView } from "./app-view.js?v=20261124-1";
+import { ApiClient } from "./api.js?v=20261124-2";
+import { AppStore } from "./app-store.js?v=20261124-2";
+import { AppView } from "./app-view.js?v=20261124-2";
 import {
   CharacterController, SessionController, ShellController, TurnController,
-} from "./controllers.js?v=20261124-1";
-import { createDiceView } from "./dice-view.js?v=20261124-1";
-import { collectElements } from "./dom.js?v=20261124-1";
-import { initLanguage, t } from "./i18n.js?v=20261124-1";
+} from "./controllers.js?v=20261124-2";
+import { createDiceView } from "./dice-view.js?v=20261124-2";
+import { collectElements } from "./dom.js?v=20261124-2";
+import { initLanguage, t } from "./i18n.js?v=20261124-2";
 
 initLanguage();
 

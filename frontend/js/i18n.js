@@ -37,6 +37,54 @@ export const translations = {
   },
 };
 
+Object.assign(translations.ru, {
+  "session.newBody": "Задайте тему и начальную ситуацию. Мастер создаст локацию после формирования отряда.",
+  "session.name": "Название сессии",
+  "session.theme": "Тема и сеттинг",
+  "session.themePlaceholder": "Мрачное фэнтези в старой пекарне",
+  "session.hook": "Начальная завязка",
+  "session.hookPlaceholder": "По ночам печь оживает, а из кладовой пропадает хлеб.",
+  "session.nameRequired": "Введите название сессии.",
+  "session.themeRequired": "Опишите тему или сеттинг приключения.",
+  "game.startCampaignHint": "Сначала запустите приключение в разделе «Герои».",
+  "game.creatingCampaign": "Мастер создаёт начало приключения…",
+  "game.noCampaign": "Отряд готов. Запустите приключение, чтобы увидеть вступление и первую локацию.",
+  "characters.createBody": "Дайте герою имя, роль, короткую предысторию и стартовые параметры.",
+  "characters.concept": "Роль и предыстория",
+  "characters.conceptPlaceholder": "Пекарь, который ищет пропавшего наставника…",
+  "characters.nextPrompt": "Отряд готов? Создайте вступление и первую локацию.",
+  "characters.joinedPrompt": "Новый герой войдёт в историю со следующего хода.",
+  "characters.startAdventure": "Начать приключение",
+  "characters.startingAdventure": "Мастер создаёт вступление и первую локацию…",
+  "characters.adventureStarted": "Приключение «{title}» началось.",
+  "characters.startError": "Не удалось создать начало приключения. Состояние не изменилось, попробуйте снова.",
+  "onboarding.startAdventure": "Начать приключение",
+});
+
+Object.assign(translations.en, {
+  "session.newBody": "Set the theme and opening situation. The Master creates a location after the party is ready.",
+  "session.name": "Session name",
+  "session.theme": "Theme and setting",
+  "session.themePlaceholder": "Dark fantasy in an old bakery",
+  "session.hook": "Opening hook",
+  "session.hookPlaceholder": "The oven wakes at night and bread vanishes from storage.",
+  "session.nameRequired": "Enter a session name.",
+  "session.themeRequired": "Describe the adventure theme or setting.",
+  "game.startCampaignHint": "Start the adventure in the Heroes section first.",
+  "game.creatingCampaign": "The Master is setting the opening scene…",
+  "game.noCampaign": "The party is ready. Start the adventure to reveal the introduction and first location.",
+  "characters.createBody": "Give the hero a name, role, short backstory, and starting attributes.",
+  "characters.concept": "Role and backstory",
+  "characters.conceptPlaceholder": "A baker searching for a missing mentor…",
+  "characters.nextPrompt": "Party ready? Create the introduction and first location.",
+  "characters.joinedPrompt": "The new hero will enter the story on the next turn.",
+  "characters.startAdventure": "Start adventure",
+  "characters.startingAdventure": "The Master is creating the introduction and first location…",
+  "characters.adventureStarted": "Adventure “{title}” has begun.",
+  "characters.startError": "Could not create the opening. State did not change; try again.",
+  "onboarding.startAdventure": "Start adventure",
+});
+
 let currentLanguage = "ru";
 
 function settingsFrom(storage) {

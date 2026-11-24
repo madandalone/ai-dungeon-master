@@ -87,13 +87,16 @@ class AuthoredCampaign(BaseModel):
 
 
 class CampaignRequest(BaseModel):
-    theme: str = Field(default=DEFAULT_THEME, min_length=1, max_length=300)
+    theme: str | None = Field(default=None, min_length=1, max_length=300)
+    opening_hook: str | None = Field(default=None, max_length=500)
     monster: str = Field(default="goblin", min_length=1, max_length=60)
     authored: AuthoredCampaign | None = None
 
 
 class GameSessionCreate(BaseModel):
     name: str
+    theme: str = Field(default=DEFAULT_THEME, min_length=1, max_length=300)
+    opening_hook: str = Field(default="", max_length=500)
     hidden_plot: str = Field(
         default=DEFAULT_PLOT,
         min_length=1,
@@ -125,7 +128,7 @@ class RollRequest(BaseModel):
 class CharacterCreateRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     name: str = Field(min_length=1, max_length=60)
-    concept: str = Field(default="", max_length=120)
+    concept: str = Field(default="", max_length=400)
     max_hp: int = Field(ge=1, le=999)
     stats: dict[str, int] = Field(default_factory=dict)
     starting_item: str = Field(default="", max_length=60)
@@ -229,6 +232,8 @@ def create_session(session_data: GameSessionCreate):
         session.name,
         state,
         hidden_plot=session_data.hidden_plot,
+        campaign_theme=session_data.theme.strip(),
+        opening_hook=session_data.opening_hook.strip(),
     )
 
     sessions[session.id] = session
@@ -456,14 +461,23 @@ def public_state(
         if pending else None
     )
 
+    campaign = get_session_store().load_campaign(session_id)
+    public["campaign"] = {
+        "started": campaign["started"],
+        "title": campaign["title"],
+        "theme": campaign["theme"],
+        "opening_hook": campaign["opening_hook"],
+    }
+
     return public
 
 
 def _start_campaign_locked(
     session_id: str,
     orchestrator: TurnOrchestrator,
-    theme: str,
+    theme: str | None,
     monster: str,
+    opening_hook: str | None = None,
     authored: AuthoredCampaign | None = None,
 ) -> tuple[bool, dict]:
     """Give the session a plot (DM-written, or authored) unless it already has one. Call under the session lock."""
@@ -472,6 +486,11 @@ def _start_campaign_locked(
     record = store.load_campaign(session_id)
     if record["started"]:
         return False, {"title": record["title"]}
+
+    selected_theme = (theme if theme is not None else record["theme"]).strip()
+    selected_hook = (
+        opening_hook if opening_hook is not None else record["opening_hook"]
+    ).strip()
 
     state = game_states[session_id]
     if not state.characters:
@@ -492,7 +511,8 @@ def _start_campaign_locked(
             )
         else:
             started = orchestrator.start_campaign(
-                state, theme, Dice(SystemRandomSource()), monster,
+                state, selected_theme, Dice(SystemRandomSource()), monster,
+                opening_hook=selected_hook,
             )
     except IntegrationError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -538,7 +558,8 @@ def start_campaign(
 
     def execute_campaign():
         created, summary = _start_campaign_locked(
-            session_id, orchestrator, body.theme, body.monster, body.authored
+            session_id, orchestrator, body.theme, body.monster,
+            body.opening_hook, body.authored,
         )
         return {"created": created, **summary, "state": public_state(session_id)}
 
@@ -753,7 +774,7 @@ def process_turn(
             # First turn of a new game: the DM writes the plot for the heroes that exist now.
             revision_before = game_states[session_id].revision
             _start_campaign_locked(
-                session_id, orchestrator, DEFAULT_THEME, "goblin"
+                session_id, orchestrator, None, "goblin"
             )
             campaign = store.load_campaign(session_id)
             if expected_revision == revision_before:

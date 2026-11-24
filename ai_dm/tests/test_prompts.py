@@ -10,7 +10,19 @@ from ai_dm import prompts
 from ai_dm.dm_engine import AIDungeonMaster
 from ai_dm.errors import ConfigurationError, ContextBudgetError
 from ai_dm.memory import history_record
-from ai_dm.models import CampaignStartRequest, CharacterState, CheckResult, TurnHistoryEntry, TurnRequest
+from ai_dm.models import (
+    CAMPAIGN_TITLE_MAX_CHARS,
+    HIDDEN_PLOT_MAX_CHARS,
+    INTRO_NARRATIVE_MAX_CHARS,
+    ROOM_CONTEXT_MAX_CHARS,
+    STARTING_LOCATION_MAX_CHARS,
+    CampaignStartRequest,
+    CampaignStartResponse,
+    CharacterState,
+    CheckResult,
+    TurnHistoryEntry,
+    TurnRequest,
+)
 from ai_dm.prompts import PromptTemplates
 from ai_dm.tests.test_dm_engine import CAMPAIGN, TURN, completion, fake_client, turn_request
 
@@ -138,15 +150,41 @@ class PromptTests(unittest.TestCase):
         hero = CharacterState(name="Элиас", hp=12, max_hp=12, inventory=["Кинжал"], stats={"Ловкость": 3})
         client = fake_client(completion(json.dumps(CAMPAIGN)))
         AIDungeonMaster(client).generate_campaign_start(
-            CampaignStartRequest(setting_theme="Кузница на окраине", characters=[hero], monster_encounter="skeleton")
+            CampaignStartRequest(
+                setting_theme="Кузница на окраине",
+                opening_hook="Из запертой кузницы каждую ночь слышен молот.",
+                characters=[hero],
+                monster_encounter="skeleton",
+            )
         )
         text = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
-        for expected in ("Кузница на окраине", '"Skeleton"', '"stats": {"Ловкость": 3}',
+        for expected in ("Кузница на окраине", "Из запертой кузницы каждую ночь слышен молот.",
+                         '"Skeleton"', '"stats": {"Ловкость": 3}',
                          "### СКРЫТЫЙ СЮЖЕТ (hidden_plot):", "две-три конкретные зацепки",
                          "какую роль играет монстр", "### ОТКРЫТАЯ ЧАСТЬ:",
                          "не называй виновника, его цель и развязку"):
             with self.subTest(expected=expected):
                 self.assertIn(expected, text)
+
+    def test_campaign_prompt_and_json_schema_enforce_compact_field_limits(self):
+        client = fake_client(completion(json.dumps(CAMPAIGN)))
+        AIDungeonMaster(client).generate_campaign_start(
+            CampaignStartRequest(setting_theme="Крипта", characters=[])
+        )
+        call = client.chat.completions.create.call_args.kwargs
+        prompt = call["messages"][1]["content"]
+        limits = {
+            "campaign_title": CAMPAIGN_TITLE_MAX_CHARS,
+            "hidden_plot": HIDDEN_PLOT_MAX_CHARS,
+            "starting_location": STARTING_LOCATION_MAX_CHARS,
+            "room_context": ROOM_CONTEXT_MAX_CHARS,
+            "intro_narrative": INTRO_NARRATIVE_MAX_CHARS,
+        }
+        properties = CampaignStartResponse.model_json_schema()["properties"]
+        for field, limit in limits.items():
+            with self.subTest(field=field):
+                self.assertEqual(properties[field]["maxLength"], limit)
+                self.assertIn(f"{field} — до {limit} символов", prompt)
 
     def test_templates_are_stable_during_repair_and_reloaded_for_next_operation(self):
         original_read = prompts._read_template
