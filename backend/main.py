@@ -275,6 +275,7 @@ def delete_session(session_id: str):
         execute_delete,
         remember=lambda result: False,
     )
+    turn_executor.forget(session_id)
     return response
 
 

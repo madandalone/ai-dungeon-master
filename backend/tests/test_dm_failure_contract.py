@@ -20,12 +20,9 @@ from integration.factory import build_orchestrator
 
 ABILITIES = {"strength": 14, "dexterity": 12, "constitution": 13, "intelligence": 10, "wisdom": 12, "charisma": 10}
 ACTION = "Пытаюсь перепрыгнуть широкую пропасть по скользкому краю."
-RESOLVED = {"status": "resolved", "response": {
-    "narrative": "Вы осматриваете комнату.", "state_updates": [], "new_location": None, "dm_thoughts": "",
-    "requires_check": False, "check": None,
-}}
-INCOMPLETE = {"status": "check"}
-CHECK = {"status": "check", "check": {"ability": "dexterity", "difficulty": 15, "reason": "Скользкий край."}}
+NO_CHECK = {"needs_check": False, "ability": None, "difficulty": None, "reason": ""}
+INCOMPLETE = {"needs_check": True, "ability": None, "difficulty": None, "reason": ""}
+CHECK = {"needs_check": True, "ability": "dexterity", "difficulty": 15, "reason": "Скользкий край."}
 
 
 def completion(payload):
@@ -78,7 +75,7 @@ class ScriptedModelTests(unittest.TestCase):
         )
 
     def test_unusable_model_answers_give_a_controlled_502_and_leave_the_session_untouched(self):
-        scripted = self.model(RESOLVED, INCOMPLETE)
+        scripted = self.model(NO_CHECK, INCOMPLETE)
         with self.assertLogs("ai_dm.dm_engine", "WARNING") as logs:
             response = self.turn()
 
@@ -91,7 +88,7 @@ class ScriptedModelTests(unittest.TestCase):
         self.assertEqual(self.store.load_session(self.sid)[2], [])
 
     def test_the_same_action_can_be_retried_right_after_the_failure(self):
-        self.model(RESOLVED, INCOMPLETE)
+        self.model(NO_CHECK, INCOMPLETE)
         with self.assertLogs("ai_dm.dm_engine", "WARNING"):
             self.assertEqual(self.turn().status_code, 502)
 
@@ -104,13 +101,13 @@ class ScriptedModelTests(unittest.TestCase):
             ("dexterity", 15, 1, "Скользкий край."),
         )
 
-    def test_a_risky_action_waits_for_the_engine_roll_after_one_request(self):
+    def test_a_risky_action_costs_one_small_request_and_waits_for_the_engine_roll(self):
         scripted = self.model(CHECK)
         response = self.turn()
         self.assertEqual((response.status_code, response.json()["status"]), (202, "awaiting_roll"))
         self.assertEqual(scripted.chat.completions.create.call_count, 1)
         schema = scripted.chat.completions.create.call_args.kwargs["response_format"]["json_schema"]["name"]
-        self.assertEqual(schema, "TurnPlan")
+        self.assertEqual(schema, "CheckDecision")
         state = self.client.get(f"/sessions/{self.sid}/state").json()
         self.assertEqual((state["revision"], state["log"]), (1, []), "nothing changes before the roll")
 

@@ -19,6 +19,7 @@ from ai_dm.errors import ConfigurationError, InvalidResponseError
 from ai_dm.models import (
     CampaignStartRequest,
     CampaignStartResponse,
+    CheckDecision,
     CheckResolution,
     CheckResult,
     TurnRequest,
@@ -30,6 +31,7 @@ from ai_dm.prompts import PromptTemplates
 from ai_dm.memory import select_history
 from ai_dm.validation import (
     validate_campaign,
+    validate_check_decision,
     validate_check_resolution,
     validate_turn,
     validate_turn_plan,
@@ -253,23 +255,39 @@ class AIDungeonMaster:
         )
 
     def plan_turn(self, request: TurnRequest) -> TurnPlan:
-        """Either resolve a safe action or request one Engine-owned ability check."""
+        """Either resolve a safe action or request one Engine-owned ability check.
+
+        Two small requests instead of one large union: first only the decision "does this action need a
+        roll, and which" (no history, no plot, no nested response), then, if no roll is needed, the narration
+        with the roll question already answered. A model that must fill a nested `check` object next to a
+        full `response` object in one schema tends to name a status and forget the payload.
+        """
         templates = PromptTemplates.load()
+        decision = self._generate(
+            templates.decision_prompt(request), CheckDecision,
+            validate_response=partial(validate_check_decision, request=request),
+            templates=templates, operation="plan.decision",
+        )
+        if decision.needs_check:
+            return TurnPlan(status="check", check=decision.proposal())
+
         history = select_history(request)
 
-        def prompt(count: int) -> str:
-            return templates.turn_prompt(
-                request,
-                history,
-                count,
-                check_text=templates.plan_check_prompt(request),
-            )
+        def validate_narration(response: TurnResponse) -> TurnResponse:
+            response = validate_turn(response, request=request)
+            if response.requires_check or response.check is not None:
+                raise ValueError(
+                    "Проверка в этом ходе уже не требуется. Верни requires_check: false и check: null."
+                )
+            return response
 
-        return self._generate(
-            prompt, TurnPlan,
-            validate_response=partial(validate_turn_plan, request=request),
-            templates=templates, history_count=history.count, operation="plan",
+        response = self._generate(
+            partial(templates.turn_prompt, request, history, check_block=templates.no_check),
+            TurnResponse,
+            validate_response=validate_narration,
+            templates=templates, history_count=history.count, operation="plan.narration",
         )
+        return TurnPlan(status="resolved", response=response)
 
     def resolve_check(
         self, request: TurnRequest, checks: list[CheckResult], *, allow_next: bool,
@@ -278,29 +296,10 @@ class AIDungeonMaster:
         templates = PromptTemplates.load()
         history = select_history(request)
         expected = "success" if all(check.success for check in checks) else "failure"
-
-        def prompt(count: int) -> str:
-            base = templates.turn_prompt(
-                request,
-                history,
-                count,
-                check_text=templates.resolution_check,
-            )
-            facts = json.dumps([check.model_dump() for check in checks], ensure_ascii=False)
-            continuation = (
-                "После успеха можно запросить следующую значимую проверку."
-                if allow_next and expected == "success"
-                else "Цепочку продолжать нельзя; верни status=resolved."
-            )
-            return base + (
-                "\n\n### ФАКТЫ ПРОВЕРОК ENGINE:\n" + facts + "\n"
-                "Эти значения окончательны. outcome обязан быть " + expected + ". "
-                + continuation + " При финальном ответе последствия и повествование должны "
-                "соответствовать исходу; провал не описывай как выполненное действие."
-            )
+        block = templates.outcome_block([check.model_dump() for check in checks], expected, allow_next)
 
         return self._generate(
-            prompt, CheckResolution,
+            partial(templates.turn_prompt, request, history, check_block=block), CheckResolution,
             validate_response=partial(
                 validate_check_resolution, request=request, expected_outcome=expected,
             ),

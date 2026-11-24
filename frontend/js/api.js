@@ -306,3 +306,18 @@ export async function cancelTurn(sessionId, actionId, fetcher = globalThis.fetch
   if (body?.status !== "cancelled" || body.action_id !== actionId) throw new ApiError("invalid_response");
   return body;
 }
+
+export class ApiClient {
+  constructor(fetcher = globalThis.fetch) {
+    this.fetcher = fetcher;
+  }
+
+  health() { return fetchHealth(this.fetcher); }
+  createSession(name) { return createSession(name, this.fetcher); }
+  deleteSession(sessionId) { return deleteSession(sessionId, this.fetcher); }
+  sessionState(sessionId) { return fetchSessionState(sessionId, this.fetcher); }
+  createCharacter(sessionId, character) { return createCharacter(sessionId, character, this.fetcher); }
+  submitTurn(sessionId, turn) { return submitTurn(sessionId, turn, this.fetcher); }
+  rollTurn(sessionId, actionId, sequence) { return rollTurn(sessionId, actionId, sequence, this.fetcher); }
+  cancelTurn(sessionId, actionId) { return cancelTurn(sessionId, actionId, this.fetcher); }
+}
