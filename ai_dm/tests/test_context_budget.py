@@ -57,7 +57,7 @@ class ContextBudgetTests(unittest.TestCase):
         self.invoke(client, request, campaign=campaign)
         return [call.kwargs["messages"] for call in client.chat.completions.create.call_args_list]
 
-    def test_exact_boundary_includes_schema_roles_and_escaped_unicode(self):
+    def test_exact_boundary_includes_roles_and_escaped_unicode(self):
         request = turn_request()
         request.player_action = 'Осмотр: "руны"\n\\тайник 🗝'
         for campaign in (False, True):
@@ -99,8 +99,8 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertIn(request.game_state.room_context, actual[1]["content"])
         self.assertIn(json.dumps([c.model_dump() for c in request.game_state.active_characters],
                                  ensure_ascii=False), actual[1]["content"])
-        self.assertIn(json.dumps(TurnResponse.model_json_schema(), ensure_ascii=False, indent=2),
-                      actual[1]["content"])
+        self.assertNotIn(json.dumps(TurnResponse.model_json_schema(), ensure_ascii=False, indent=2),
+                         actual[1]["content"])
         self.assertEqual(request, before)
 
     def test_oversized_latest_entry_does_not_get_replaced_by_older_short_entries(self):

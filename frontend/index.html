@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#000000">
     <title>AI Dungeon Master</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="styles.css?v=20261117-2">
+    <link rel="stylesheet" href="styles.css?v=20261123-1">
   </head>
   <body>
     <div class="app-shell" id="app-shell">
@@ -151,6 +151,19 @@
         </section>
       </main>
     </div>
+    <dialog class="session-delete-dialog" id="session-delete-dialog" aria-labelledby="session-delete-title">
+      <div class="delete-dialog-content">
+        <p class="panel-eyebrow" data-i18n="session.deleteEyebrow">ОПАСНАЯ ЗОНА</p>
+        <h2 id="session-delete-title" data-i18n="session.deleteTitle">Удалить сессию?</h2>
+        <p id="session-delete-message"></p>
+        <p class="delete-pending-warning" id="session-delete-pending" data-i18n="session.deletePending" hidden>Незавершённая проверка и уже выпавший результат также будут удалены.</p>
+        <p class="form-message delete-dialog-error" id="session-delete-error" role="alert"></p>
+        <div class="delete-dialog-actions">
+          <button class="secondary-button" id="session-delete-cancel" type="button" data-i18n="session.deleteCancel">Отмена</button>
+          <button class="danger-button" id="session-delete-confirm" type="button" data-i18n="session.deleteConfirm">Удалить навсегда</button>
+        </div>
+      </div>
+    </dialog>
     <div class="dice-overlay" id="dice-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="dice-title">
       <div class="dice-stage">
         <p class="panel-eyebrow" id="dice-title" data-i18n="check.rolling">КУБИК ВРАЩАЕТСЯ</p>
@@ -158,6 +171,6 @@
         <p class="dice-formula" id="dice-formula"></p>
       </div>
     </div>
-    <script type="module" src="js/app.js?v=20261117-2"></script>
+    <script type="module" src="js/app.js?v=20261123-1"></script>
   </body>
 </html>

@@ -45,3 +45,12 @@ test("new actions stay blocked while a check is pending", () => {
   assert.match(app, /Boolean\(state\?\.pending_turn\)/);
   assert.match(app, /if \(!canPlay\(state\).*state\.pending_turn\) return/s);
 });
+
+test("session deletion uses an accessible confirmation dialog", () => {
+  assert.match(html, /<dialog[^>]+id="session-delete-dialog"[^>]+aria-labelledby="session-delete-title"/);
+  assert.match(html, /id="session-delete-pending"[^>]+hidden/);
+  assert.match(html, /id="session-delete-cancel"/);
+  assert.match(html, /id="session-delete-confirm"/);
+  assert.match(app, /await deleteSession\(target\.session_id\)/);
+  assert.match(app, /store = removeSession\(store, target\.session_id\)/);
+});

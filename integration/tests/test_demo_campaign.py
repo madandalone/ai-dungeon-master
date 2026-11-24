@@ -46,15 +46,14 @@ class ScriptedModel:
         schema = kwargs["response_format"]["json_schema"]["name"]
         prompt = " ".join(message["content"] for message in kwargs["messages"])
         self.calls.append((schema, prompt))
-        if schema == "CheckDecision":
+        if schema == "TurnPlan":
             if DEMO["actions"]["risky"] in prompt:
-                return completion({"needs_check": True, "ability": "strength", "difficulty": 10,
-                                   "reason": "Крышка старого сундука заклинила, её нужно открыть усилием"})
-            return completion({"needs_check": False, "ability": None, "difficulty": None, "reason": ""})
-        if schema == "TurnResponse":
-            return completion(turn_payload(SAFE_NARRATION))
-        outcome = re.search(r"outcome: (success|failure)", prompt).group(1)
-        return completion({"status": "resolved", "outcome": outcome, "check": None,
+                return completion({"status": "check", "check": {
+                    "ability": "strength", "difficulty": 10,
+                    "reason": "Крышка старого сундука заклинила, её нужно открыть усилием"}})
+            return completion({"status": "resolved", "response": turn_payload(SAFE_NARRATION)})
+        outcome = re.search(r"outcome обязан быть (success|failure)", prompt).group(1)
+        return completion({"status": "resolved", "outcome": outcome,
                            "response": turn_payload(WON if outcome == "success" else LOST)})
 
 
@@ -97,7 +96,7 @@ class DemoCampaignTests(unittest.TestCase):
             "action_id": "safe-1", "character_id": hero["id"], "text": DEMO["actions"]["safe"]})
         self.assertEqual((safe.status_code, safe.json()["status"], safe.json()["accepted"]), (200, "resolved", True))
         self.assertEqual(safe.json()["narration"], SAFE_NARRATION)
-        self.assertEqual([schema for schema, _ in self.model.calls], ["CheckDecision", "TurnResponse"])
+        self.assertEqual([schema for schema, _ in self.model.calls], ["TurnPlan"], "one request for a safe action")
         self.assertIsNone(safe.json().get("check_outcome"), "a safe action rolls nothing")
 
         risky = http.post(f"/sessions/{sid}/turns", json={
@@ -106,7 +105,7 @@ class DemoCampaignTests(unittest.TestCase):
         pending = risky.json()["pending_turn"]
         self.assertEqual((pending["ability"], pending["difficulty"], pending["modifier"], pending["score"]),
                          ("strength", 10, 2, 14))
-        self.assertEqual(self.model.calls[-1][0], "CheckDecision", "the model only chose the check, no outcome yet")
+        self.assertEqual(self.model.calls[-1][0], "TurnPlan", "the model only chose the check, no outcome yet")
 
         rolled = http.post(f"/sessions/{sid}/turns/risky-1/roll", json={"sequence": 1})
         self.assertEqual((rolled.status_code, rolled.json()["status"], rolled.json()["accepted"]),
@@ -129,11 +128,8 @@ class DemoCampaignTests(unittest.TestCase):
 
         plot = DEMO["campaign"]["hidden_plot"]
         for schema, prompt in self.model.calls:
-            if schema == "CheckDecision":
-                self.assertNotIn(plot, prompt, "the small decision never sees the plot")
-            else:
-                self.assertIn(plot, prompt)
-                self.assertIn("Одна комната: деревянный стол", prompt)
+            self.assertIn(plot, prompt)
+            self.assertIn("Одна комната: деревянный стол", prompt)
         public = safe.text + risky.text + rolled.text + json.dumps(state, ensure_ascii=False)
         self.assertNotIn(plot, public)
 

@@ -35,21 +35,23 @@ class PromptTemplates:
     repair: str
     check_offer: str
     check_result: str
-    check_decision: str
-    no_check: str
-    check_outcome: str
+    plan_check: str
+    resolution_check: str
 
     @classmethod
     def load(cls) -> "PromptTemplates":
         texts = {
             name: _read_template(f"{name}.txt")
             for name in (
-                "system", "campaign", "turn", "request", "repair", "check_offer", "check_result",
-                "check_decision", "no_check", "check_outcome",
+                "system", "campaign", "turn", "request", "repair", "check_offer",
+                "check_result", "plan_check", "resolution_check",
             )
         }
         # These messages are inserted into other text; they carry no final newline of their own.
-        for name in ("request", "repair", "check_offer", "check_result", "no_check", "check_outcome"):
+        for name in (
+            "request", "repair", "check_offer", "check_result", "plan_check",
+            "resolution_check",
+        ):
             texts[name] = texts[name].removesuffix("\n")
         return cls(**texts)
 
@@ -60,8 +62,8 @@ class PromptTemplates:
         except (KeyError, ValueError) as exc:
             raise ConfigurationError(f"Некорректный шаблон промпта: {name}.txt.") from exc
 
-    def request_prompt(self, prompt: str, schema: str) -> str:
-        return self._render("request", prompt=prompt, schema=schema)
+    def request_prompt(self, prompt: str) -> str:
+        return self._render("request", prompt=prompt)
 
     def repair_prompt(self, details: str) -> str:
         return self._render("repair", details=details)
@@ -92,38 +94,29 @@ class PromptTemplates:
             max_difficulty=str(MAX_DIFFICULTY),
         )
 
-    def decision_prompt(self, request: TurnRequest) -> str:
-        """Small first planning step: only the action, the scene and the hero's abilities, no history or plot."""
+    def plan_check_prompt(self, request: TurnRequest) -> str:
+        """Describe only the TurnPlan contract, without the legacy TurnResponse flags."""
         actor = next((character for character in request.game_state.active_characters
                       if character.name == request.acting_character), None)
-        abilities = (actor.abilities or actor.stats) if actor is not None else {}
+        if actor is None or not (actor.abilities or actor.stats):
+            return (
+                "Проверка недоступна: верни status=resolved, response с обычным итогом "
+                "и check=null."
+            )
+        abilities = actor.abilities or actor.stats
         return self._render(
-            "check_decision",
-            location=request.game_state.location,
-            room_context=request.game_state.room_context,
-            acting_character=request.acting_character or _ACTOR_UNKNOWN,
+            "plan_check",
             abilities=json.dumps(abilities, ensure_ascii=False),
-            player_action=request.player_action,
-        )
-
-    def outcome_block(self, checks: list[dict], expected: str, allow_next: bool) -> str:
-        """Check block for the second stage: the Engine's facts and the outcome the answer must match."""
-        continuation = (
-            "После успеха можно запросить следующую значимую проверку: верни status=check и check."
-            if allow_next and expected == "success"
-            else "Цепочку продолжать нельзя: верни status=resolved и response."
-        )
-        return self._render(
-            "check_outcome",
-            facts=json.dumps(checks, ensure_ascii=False),
-            expected=expected,
-            continuation=continuation,
         )
 
     def turn_prompt(
-        self, request: TurnRequest, history: HistorySelection, count: int, check_block: str | None = None,
+        self,
+        request: TurnRequest,
+        history: HistorySelection,
+        count: int,
+        *,
+        check_text: str | None = None,
     ) -> str:
-        """`check_block` replaces the default check instruction when the caller already knows the stage."""
         recent, memories = history.blocks(count)
         return self._render(
             "turn",
@@ -138,5 +131,5 @@ class PromptTemplates:
             acting_character=(json.dumps(request.acting_character, ensure_ascii=False)
                               if request.acting_character else _ACTOR_UNKNOWN),
             player_action=request.player_action,
-            check=check_block if check_block is not None else self.check_prompt(request),
+            check=self.check_prompt(request) if check_text is None else check_text,
         )

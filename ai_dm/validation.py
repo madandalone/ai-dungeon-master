@@ -9,7 +9,6 @@ from ai_dm.models import (
     CampaignStartRequest,
     CampaignStartResponse,
     CharacterState,
-    CheckDecision,
     CheckResolution,
     TurnRequest,
     TurnPlan,
@@ -279,22 +278,6 @@ def _check_error(ability: str, request: TurnRequest) -> str | None:
     if actor is None or ability not in (actor.abilities or actor.stats):
         return f"Характеристика {ability!r} отсутствует у действующего персонажа."
     return None
-
-
-def validate_check_decision(decision: CheckDecision, *, request: TurnRequest) -> CheckDecision:
-    """The decision must name an ability the hero has, and must not wave away an openly risky action."""
-    if decision.needs_check:
-        error = _check_error(decision.ability, request)
-        if error:
-            raise ValueError(error)
-        return decision
-    action = request.player_action.casefold()
-    if any(marker in action for marker in _EXPLICIT_UNCERTAINTY):
-        raise ValueError(
-            "Игрок явно описал попытку, риск или опасность. Верни needs_check: true и заполни "
-            "ability, difficulty и reason."
-        )
-    return decision
 
 
 def validate_turn_plan(response: TurnPlan, *, request: TurnRequest) -> TurnPlan:

@@ -101,8 +101,10 @@ class GenerationTests(unittest.TestCase):
                     result = self.invoke(client, kind)
                     self.assertEqual(result, model(**data))
                     self.assertEqual(client.chat.completions.create.call_count, 1)
-                    prompt = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
-                    self.assertIn(json.dumps(model.model_json_schema(), ensure_ascii=False, indent=2), prompt)
+                    call = client.chat.completions.create.call_args.kwargs
+                    prompt = call["messages"][1]["content"]
+                    self.assertNotIn(json.dumps(model.model_json_schema(), ensure_ascii=False, indent=2), prompt)
+                    self.assertEqual(call["response_format"]["json_schema"]["schema"], model.model_json_schema())
 
     def test_turn_prompt_preserves_all_existing_context(self):
         client = fake_client(completion(json.dumps(TURN)))
