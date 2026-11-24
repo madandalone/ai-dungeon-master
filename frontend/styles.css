@@ -610,6 +610,11 @@ input:focus, textarea:focus, select:focus { border-color: var(--warning); }
 .skill-check-card[hidden] { display: none; }
 .skill-check-card h3 { margin: 4px 0 8px; font-size: 1.25rem; }
 .skill-check-card p { margin: 0; }
+.skill-check-card .check-actor {
+  margin: 4px 0 10px;
+  color: var(--cyan);
+  font-size: 0.76rem;
+}
 .check-math { display: grid; gap: 7px; text-align: right; color: var(--warning); }
 .check-math strong { font-size: 1.15rem; }
 .check-actions { grid-column: 1 / -1; display: flex; gap: 12px; justify-content: flex-end; flex-wrap: wrap; }
@@ -956,6 +961,23 @@ input:focus, textarea:focus, select:focus { border-color: var(--warning); }
 .delete-dialog-error { color: var(--bad); }
 .delete-dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
+.character-next-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 3px solid var(--good);
+}
+.character-next-actions[hidden] { display: none; }
+.character-next-actions p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--good);
+}
+.empty-state p { margin: 0; }
+.empty-state .secondary-button { margin-top: 12px; }
+
 @media (min-width: 1101px) {
   .app-shell.is-collapsed .sidebar { padding-inline: 9px; }
   .app-shell.is-collapsed .brand-row { width: 100%; justify-content: center; }
@@ -1018,6 +1040,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--warning); }
   .party-list { grid-template-columns: 1fr; }
   .session-item { grid-template-columns: 1fr; }
   .session-actions { grid-template-columns: 1fr 1fr; }
+  .character-next-actions { grid-template-columns: 1fr; }
+  .character-next-actions p { grid-column: 1; }
 }
 
 @media (max-width: 380px) {

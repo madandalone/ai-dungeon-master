@@ -134,6 +134,14 @@ def add_character(
         error = EngineError("DUPLICATE_CHARACTER", "Character id already exists in this session.")
         return EngineResult(False, state, (), (error,))
 
+    normalized_name = character.name.strip().casefold()
+    if any(existing.name.strip().casefold() == normalized_name for existing in state.characters):
+        error = EngineError(
+            "DUPLICATE_CHARACTER_NAME",
+            "Character name already exists in this session.",
+        )
+        return EngineResult(False, state, (), (error,))
+
     error = _character_error(character)
     if error is not None:
         return EngineResult(False, state, (), (error,))

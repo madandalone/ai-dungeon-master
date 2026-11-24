@@ -5,6 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -30,10 +31,14 @@ from engine.commands import AdjustHealth, SkillCheck
 from engine.dice import Dice, LocalRandomSource, SystemRandomSource
 from engine.events import SkillCheckResolved
 from engine.models import ABILITIES, Character, GameState, InventoryItem, PlayerAction
-from integration import IntegrationError, TurnOrchestrator, TurnOutcome
+from integration import Campaign, IntegrationError, TurnOrchestrator, TurnOutcome
 from integration.factory import build_orchestrator
 from integration.turns import IdempotentExecutor, make_player_action
 
+
+# Plain `uvicorn backend.main:app` must see .env too (run.sh sources it, other launchers do not).
+# Variables already set in the environment win.
+load_dotenv()
 
 app = FastAPI(title="AI Dungeon Master API")
 
@@ -64,9 +69,27 @@ DEFAULT_PLOT = "Test campaign"
 DEFAULT_THEME = "Приключение в фэнтезийном мире"
 
 
+class AuthoredCampaign(BaseModel):
+    """A campaign written by a person instead of the Dungeon Master (demos, tests, own stories)."""
+
+    title: str = Field(min_length=1, max_length=120)
+    hidden_plot: str = Field(min_length=1, max_length=20000)
+    starting_location: str = Field(min_length=1, max_length=120)
+    room_context: str = Field(min_length=1, max_length=2000)
+    intro_narrative: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def _not_blank(self) -> "AuthoredCampaign":
+        blank = [name for name, value in self.model_dump().items() if not value.strip()]
+        if blank:
+            raise ValueError("Fields must not be blank: " + ", ".join(blank))
+        return self
+
+
 class CampaignRequest(BaseModel):
     theme: str = Field(default=DEFAULT_THEME, min_length=1, max_length=300)
     monster: str = Field(default="goblin", min_length=1, max_length=60)
+    authored: AuthoredCampaign | None = None
 
 
 class GameSessionCreate(BaseModel):
@@ -252,6 +275,7 @@ def delete_session(session_id: str):
         execute_delete,
         remember=lambda result: False,
     )
+    turn_executor.forget(session_id)
     return response
 
 
@@ -440,21 +464,36 @@ def _start_campaign_locked(
     orchestrator: TurnOrchestrator,
     theme: str,
     monster: str,
+    authored: AuthoredCampaign | None = None,
 ) -> tuple[bool, dict]:
-    """Give the session a DM-written plot unless it already has one. Call under the session lock."""
+    """Give the session a plot (DM-written, or authored) unless it already has one. Call under the session lock."""
     ensure_session_loaded(session_id)
     store = get_session_store()
     record = store.load_campaign(session_id)
     if record["started"]:
         return False, {"title": record["title"]}
 
-    try:
-        started = orchestrator.start_campaign(
-            game_states[session_id],
-            theme,
-            Dice(SystemRandomSource()),
-            monster,
+    state = game_states[session_id]
+    if not state.characters:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "NO_CHARACTERS",
+                "message": "Create at least one character before starting the campaign.",
+            },
         )
+
+    try:
+        if authored is not None:
+            started = orchestrator.use_authored_campaign(
+                state,
+                Campaign(**authored.model_dump()),
+                Dice(SystemRandomSource()),
+            )
+        else:
+            started = orchestrator.start_campaign(
+                state, theme, Dice(SystemRandomSource()), monster,
+            )
     except IntegrationError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -483,12 +522,12 @@ def start_campaign(
     body: CampaignRequest = CampaignRequest(),
     orchestrator: TurnOrchestrator = Depends(get_orchestrator),
 ):
-    """Let the Dungeon Master write the hidden plot for the session's current heroes.
+    """Give the session a hidden plot: written by the Dungeon Master for the current heroes, or `authored`.
 
-    Safe to repeat: a session that already has a campaign answers `created: false`.
+    Needs at least one hero. Safe to repeat: a session that already has a campaign answers `created: false`.
     The plot itself never leaves the server.
     """
-    if not orchestrator.can_start_campaign:
+    if body.authored is None and not orchestrator.can_start_campaign:
         raise HTTPException(
             status_code=409,
             detail={
@@ -499,7 +538,7 @@ def start_campaign(
 
     def execute_campaign():
         created, summary = _start_campaign_locked(
-            session_id, orchestrator, body.theme, body.monster
+            session_id, orchestrator, body.theme, body.monster, body.authored
         )
         return {"created": created, **summary, "state": public_state(session_id)}
 
@@ -707,6 +746,7 @@ def process_turn(
         expected_revision = turn_data.expected_revision
         if (
             orchestrator.can_start_campaign
+            and game_states[session_id].characters
             and not campaign["started"]
             and campaign["hidden_plot"] == DEFAULT_PLOT
         ):

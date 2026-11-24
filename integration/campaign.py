@@ -77,6 +77,26 @@ def begin_campaign(
         room_context=response.room_context,
         intro_narrative=response.intro_narrative,
     )
+    logger.info("campaign written session=%s characters=%d dm_ms=%d", state.session_id, len(state.characters), dm_ms)
+    return _enter_opening_scene(state, campaign, dice)
+
+
+def author_campaign(state: GameState, campaign: Campaign, dice: Dice) -> CampaignStart:
+    """Start a session from a campaign written by a person: no DM call, same Engine move into the opening scene.
+
+    For demos, reproducible tests and authors who have their own story. Every field is required, because a
+    half-written campaign would leave the DM without a plot or a scene.
+    """
+    if not state.characters:
+        raise ValueError("A campaign needs at least one character")
+    blank = [name for name, value in vars(campaign).items() if not str(value).strip()]
+    if blank:
+        raise ValueError("Authored campaign fields must not be blank: " + ", ".join(blank))
+    logger.info("campaign authored session=%s characters=%d", state.session_id, len(state.characters))
+    return _enter_opening_scene(state, campaign, dice)
+
+
+def _enter_opening_scene(state: GameState, campaign: Campaign, dice: Dice) -> CampaignStart:
     action = PlayerAction(
         action_id=str(uuid4()),
         session_id=state.session_id,
@@ -89,6 +109,4 @@ def begin_campaign(
         codes = ",".join(error.code for error in result.errors)
         logger.error("campaign rejected session=%s errors=%s", state.session_id, codes)
         raise CampaignRejected(f"The Engine refused the opening scene ({codes})", result.errors)
-
-    logger.info("campaign started session=%s characters=%d dm_ms=%d", state.session_id, len(state.characters), dm_ms)
     return CampaignStart(campaign, result.state, result.events)

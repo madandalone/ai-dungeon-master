@@ -28,7 +28,11 @@ class RulesSettings:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "RulesSettings":
-        env = os.environ if env is None else env
+        if env is None:
+            from dotenv import load_dotenv
+
+            load_dotenv()  # variables already set in the environment win
+            env = os.environ
         book_path = env.get("RULES_BOOK_PATH")
         if not book_path:
             raise IntegrationConfigError("RULES_BOOK_PATH is not set")

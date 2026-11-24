@@ -9,6 +9,7 @@ from ai_dm.models import (
     CampaignStartRequest,
     CampaignStartResponse,
     CharacterState,
+    CheckDecision,
     CheckResolution,
     TurnRequest,
     TurnPlan,
@@ -19,9 +20,14 @@ from ai_dm.models import (
 _RUSSIAN = frozenset("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя")
 _LOOKALIKES = dict(zip("ABCEHKMOPTXYaceopxy", "АВСЕНКМОРТХУасеорху"))
 _WORDS = re.compile(r"\w+")
+_GAME_NOTATION = re.compile(
+    r"(?i)(?<!\w)(?:d(?:4|6|8|10|12|20|100)|dc|hp|d&d)(?!\w)"
+)
 _EXPLICIT_UNCERTAINTY = (
-    "пытаюсь", "пытается", "попытка", "рискуя", "риск", "опасн", "сложн",
-    "try", "attempt", "risk", "dangerous", "difficult",
+    "рискуя", "риск", "опасн", "сложн", "пропаст", "скользк", "перепрыг",
+    "карабк", "взлом", "выбить", "атак", "обезвред", "подкрад", "незаметн",
+    "risk", "dangerous", "difficult", "chasm", "cliff", "slippery", "jump",
+    "climb", "break down", "attack", "disarm", "sneak",
 )
 
 # D&D 5e difficulty classes: 5 is very easy, 30 is nearly impossible.
@@ -72,8 +78,11 @@ def _language_errors(fields: dict[str, str], references: Sequence[str] = ()) -> 
     pattern = _reference_pattern(references)
     for field, value in fields.items():
         text, reference_count = pattern.subn("", value) if pattern else (value, 0)
+        text, notation_count = _GAME_NOTATION.subn("", text)
         letters = [char for char in text if char.isalpha()]
-        if (not letters and not reference_count) or any(char not in _RUSSIAN for char in letters):
+        if (not letters and not reference_count and not notation_count) or any(
+            char not in _RUSSIAN for char in letters
+        ):
             invalid.append(field)
     if not invalid:
         return []
@@ -278,6 +287,26 @@ def _check_error(ability: str, request: TurnRequest) -> str | None:
     if actor is None or ability not in (actor.abilities or actor.stats):
         return f"Характеристика {ability!r} отсутствует у действующего персонажа."
     return None
+
+
+def validate_check_decision(decision: CheckDecision, *, request: TurnRequest) -> CheckDecision:
+    """The decision must name an available ability and must not waive an explicit material risk.
+
+    Words such as «пытаюсь» are deliberately not sufficient: a player may try to look around or talk,
+    and forcing a die on every such turn would make ordinary roleplay random.
+    """
+    if decision.needs_check:
+        error = _check_error(decision.ability, request)
+        if error:
+            raise ValueError(error)
+        return decision
+    action = request.player_action.casefold()
+    if any(marker in action for marker in _EXPLICIT_UNCERTAINTY):
+        raise ValueError(
+            "Игрок явно описал попытку, риск или опасность. Верни needs_check: true и заполни "
+            "ability, difficulty и reason."
+        )
+    return decision
 
 
 def validate_turn_plan(response: TurnPlan, *, request: TurnRequest) -> TurnPlan:
