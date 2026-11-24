@@ -2,19 +2,21 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [html, css, app, dice] = await Promise.all([
+const [html, css, view, controllers, dice] = await Promise.all([
   readFile(new URL("../index.html", import.meta.url), "utf8"),
   readFile(new URL("../styles.css", import.meta.url), "utf8"),
-  readFile(new URL("../js/app.js", import.meta.url), "utf8"),
+  readFile(new URL("../js/app-view.js", import.meta.url), "utf8"),
+  readFile(new URL("../js/controllers.js", import.meta.url), "utf8"),
   readFile(new URL("../js/dice-view.js", import.meta.url), "utf8"),
 ]);
 
 test("skill check card exposes chance, sequence and a separate roll action", () => {
   assert.match(html, /id="skill-check-chance"/);
   assert.match(html, /id="roll-d20"/);
-  assert.match(app, /current: pending\.sequence/);
-  assert.match(app, /maximum: pending\.maximum/);
-  assert.match(app, /pending\.chance/);
+  assert.match(html, /id="skill-check-actor"/);
+  assert.match(view, /current: pending\.sequence/);
+  assert.match(view, /maximum: pending\.maximum/);
+  assert.match(view, /pending\.chance/);
 });
 
 test("dice overlay has rolling, landing and outcome states", () => {
@@ -42,8 +44,8 @@ test("actor select and collapsed footer use custom pixel controls", () => {
 });
 
 test("new actions stay blocked while a check is pending", () => {
-  assert.match(app, /Boolean\(state\?\.pending_turn\)/);
-  assert.match(app, /if \(!canPlay\(state\).*state\.pending_turn\) return/s);
+  assert.match(view, /Boolean\(state\?\.pending_turn\)/);
+  assert.match(controllers, /if \(!this\.canPlay\(state\).*state\.pending_turn\) return/s);
 });
 
 test("session deletion uses an accessible confirmation dialog", () => {
@@ -51,6 +53,6 @@ test("session deletion uses an accessible confirmation dialog", () => {
   assert.match(html, /id="session-delete-pending"[^>]+hidden/);
   assert.match(html, /id="session-delete-cancel"/);
   assert.match(html, /id="session-delete-confirm"/);
-  assert.match(app, /await deleteSession\(target\.session_id\)/);
-  assert.match(app, /store = removeSession\(store, target\.session_id\)/);
+  assert.match(controllers, /await this\.api\.deleteSession\(target\.session_id\)/);
+  assert.match(controllers, /this\.store\.removeSession\(target\.session_id\)/);
 });

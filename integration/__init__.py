@@ -1,4 +1,4 @@
-from integration.campaign import Campaign, CampaignStart, begin_campaign
+from integration.campaign import Campaign, CampaignStart, author_campaign, begin_campaign
 from integration.errors import (
     CampaignRejected,
     DungeonMasterError,
@@ -27,6 +27,7 @@ __all__ = [
     "TurnOutcome",
     "TurnPlanningOutcome",
     "UnmappableResponse",
+    "author_campaign",
     "begin_campaign",
     "build_dungeon_master",
     "build_orchestrator",

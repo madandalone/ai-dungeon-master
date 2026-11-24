@@ -81,6 +81,7 @@ class SessionManagementTests(unittest.TestCase):
 
     def test_delete_session_and_related_data(self):
         session_id = self.create_session("To delete")
+        backend.turn_executor.run(session_id, "old-result", lambda: {"ok": True})
 
         _, initial_state, _ = self.store.load_session(session_id)
 
@@ -134,6 +135,8 @@ class SessionManagementTests(unittest.TestCase):
         self.assertNotIn(session_id, backend.sessions)
         self.assertNotIn(session_id, backend.game_states)
         self.assertNotIn(session_id, backend.game_histories)
+        self.assertNotIn(session_id, backend.turn_executor._remembered)
+        self.assertNotIn(session_id, backend.turn_executor._session_locks)
 
         self.assertEqual(self.client.get("/sessions").json(), [])
         self.assertEqual(

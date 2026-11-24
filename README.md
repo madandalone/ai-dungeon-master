@@ -96,9 +96,11 @@ cp .env.example .env
 | `MODEL_NAME` | идентификатор модели (должна поддерживать JSON Schema) | `Qwen/Qwen3.8-27B` |
 | `AI_DM_TIMEOUT_SECONDS` | таймаут запроса к модели | `60` |
 | `AI_DM_MAX_RETRY_WAIT_SECONDS` | максимальное ожидание повтора при лимитах провайдера | `10` |
+| `AI_DM_LOG_RAW` | `1` пишет в лог полные промпты и сырые ответы модели (только для локальной отладки: в них скрытый сюжет) | выключено |
 | `AI_DM_LOCAL_WARMUP` | фоновый прогрев модели при локальном Ollama (`0` отключает) | `1` |
 | `OLLAMA_KEEP_ALIVE` | сколько Ollama держит прогретую модель в памяти | `15m` |
 | `OLLAMA_WARMUP_TIMEOUT_SECONDS` | таймаут фонового прогрева Ollama | `180` |
+| `AI_DM_LOG_RAW` | `1` пишет в лог полные промпты и сырые ответы модели (только для локальной отладки: в них скрытый сюжет) | выключено |
 | `RULES_BOOK_PATH` | путь к книге правил | обязателен для настоящих ходов |
 | `RULES_MODE` | `keyword`, `rag` или `hybrid` | `keyword` |
 | `RULES_LEXICON` | `0` отключает русско-английский словарь терминов | включён |
@@ -139,13 +141,17 @@ Backend отдаёт JSON. Ошибки ведущего приходят как
 | `DELETE` | `/sessions/{session_id}` | удалить сессию и все её данные |
 | `GET` | `/sessions/{session_id}/state` | публичное состояние: герои, локация, летопись, ожидающая проверка |
 | `POST` | `/sessions/{session_id}/characters` | создать героя: `expected_revision`, `name`, `concept`, `max_hp`, `stats` (шесть характеристик 1-20), `starting_item` |
-| `POST` | `/sessions/{session_id}/campaign` | написать кампанию: необязательные `theme`, `monster`; повтор возвращает `created: false`; `409 CAMPAIGN_UNAVAILABLE`, если ведущий не умеет |
+| `POST` | `/sessions/{session_id}/campaign` | дать сессии сюжет: ведущий пишет его по героям (необязательные `theme`, `monster`) либо принимается готовый `authored` (`title`, `hidden_plot`, `starting_location`, `room_context`, `intro_narrative`); нужен хотя бы один герой (`409 NO_CHARACTERS`); повтор возвращает `created: false`; `409 CAMPAIGN_UNAVAILABLE`, если ведущий не умеет писать кампании и `authored` не передан |
 | `POST` | `/sessions/{session_id}/turns` | ход: `character_id`, `text`, необязательные `action_id`, `expected_revision`; `200` исход или `202 awaiting_roll` |
-| `POST` | `/sessions/{session_id}/turns/{action_id}/roll` | бросить d20 ожидающей проверки (повтор безопасен) |
+| `POST` | `/sessions/{session_id}/turns/{action_id}/roll` | бросить d20 ожидающей проверки: тело `{"sequence": 1}` (номер проверки в цепочке, 1-3); повтор безопасен |
 | `POST` | `/sessions/{session_id}/turns/{action_id}/cancel` | отменить проверку до первого броска |
 | `POST` | `/sessions/{session_id}/actions` | техническое изменение здоровья без модели (`character_id`, `text`, `health_delta`) |
 
-Коды конфликтов: `STALE_REVISION` (клиент отстал от сервера), `PENDING_CHECK` (сначала завершите проверку), `ACTION_ID_REUSED`, `ROLL_ALREADY_STARTED`.
+Коды конфликтов: `NO_CHARACTERS`, `CAMPAIGN_UNAVAILABLE`, `STALE_REVISION` (клиент отстал от сервера), `PENDING_CHECK` (сначала завершите проверку), `ACTION_ID_REUSED`, `ROLL_ALREADY_STARTED`.
+
+## Демо-кампания «Сундук в сторожке»
+
+Минимальная кампания для показа одного настоящего броска: один герой, одна комната, нет врагов и ловушек. Готовый материал и пошаговый сценарий: [docs/demo_campaign.md](docs/demo_campaign.md), данные: [docs/demo_campaign.json](docs/demo_campaign.json). Сюжет передаётся как `authored`, поэтому модель не пишет кампанию и контекст остаётся маленьким.
 
 ## Тесты
 
@@ -160,7 +166,7 @@ python -m unittest discover -s rules_service/tests -p 'test_*.py' -v
 npm run test:frontend                                               # нужен Node.js
 ```
 
-Состояние на момент написания: движок 24, backend 49, интеграция 85 (один тест пропущен без ключа), AI DM 171 и интерфейс 40 тестов проходят. Набор Rules Service содержит 62 теста; проверки качества поиска требуют полной книги правил, а не сокращённого демонстрационного `data/srd.md`.
+Состояние на момент написания: движок 25, AI DM 183, backend 77, интеграция 91 (один тест пропущен без ключа), Rules Service 63, интерфейс 48 тестов, все проходят. Проверки качества поиска правил и часть тестов Rules Service используют полную книгу `data/srd.md` и пропускаются без неё.
 
 Тесты используют заглушку вместо модели, поэтому не требуют ключа и сети. Тесты, опирающиеся на настоящую книгу правил, пропускаются, если нет `data/srd.md`.
 

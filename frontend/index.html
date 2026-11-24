@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#000000">
     <title>AI Dungeon Master</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="styles.css?v=20261123-1">
+    <link rel="stylesheet" href="styles.css?v=20261124-1">
   </head>
   <body>
     <div class="app-shell" id="app-shell">
@@ -78,10 +78,11 @@
                 <div class="receipt-heading"><div><p class="panel-eyebrow" data-i18n="game.receiptEyebrow">ИТОГ ХОДА</p><h3 id="turn-receipt-title" data-i18n="game.receiptTitle">Что изменилось</h3></div><span class="receipt-turn" id="receipt-turn"></span></div>
                 <ul class="receipt-list" id="receipt-list" aria-live="polite"></ul>
               </section>
-              <section class="skill-check-card" id="skill-check-card" aria-labelledby="skill-check-title" hidden>
+              <section class="skill-check-card" id="skill-check-card" aria-labelledby="skill-check-title" aria-live="polite" hidden>
                 <div>
                   <p class="panel-eyebrow" data-i18n="check.eyebrow">ПРОВЕРКА НАВЫКА</p>
                   <h3 id="skill-check-title"></h3>
+                  <p class="check-actor" id="skill-check-actor"></p>
                   <p id="skill-check-reason"></p>
                 </div>
                 <div class="check-math"><strong id="skill-check-formula"></strong><span id="skill-check-chance"></span></div>
@@ -124,6 +125,11 @@
                 <label><span data-i18n="characters.item">Стартовый предмет</span><input id="starting-item" name="starting-item" type="text" maxlength="60" data-i18n-placeholder="characters.itemPlaceholder" placeholder="Например, кинжал"></label>
                 <p class="form-message" id="character-message" role="status"></p><button class="primary-button" type="submit" data-i18n="characters.create">Добавить героя</button>
               </form>
+              <div class="character-next-actions" id="character-next-actions" hidden>
+                <p data-i18n="characters.nextPrompt">Герой добавлен. Что дальше?</p>
+                <button class="secondary-button" id="add-another-hero" type="button" data-i18n="characters.addAnother">Добавить ещё героя</button>
+                <button class="primary-button" id="go-to-game" type="button" data-i18n="characters.goToGame">Перейти к игре</button>
+              </div>
             </article>
           </div>
         </section>
@@ -171,6 +177,6 @@
         <p class="dice-formula" id="dice-formula"></p>
       </div>
     </div>
-    <script type="module" src="js/app.js?v=20261123-1"></script>
+    <script type="module" src="js/app.js?v=20261124-1"></script>
   </body>
 </html>

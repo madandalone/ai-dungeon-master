@@ -33,6 +33,10 @@ class ExpandQueryTests(unittest.TestCase):
     def test_a_russian_query_without_rule_words_is_unchanged(self):
         self.assertEqual(expand_query("Здравствуйте, расскажите о погоде"), "Здравствуйте, расскажите о погоде")
 
+    def test_a_sunken_place_does_not_trigger_suffocation_rules(self):
+        query = "Я вижу затонувший храм"
+        self.assertEqual(expand_query(query), query)
+
     def test_several_topics_add_their_terms_once(self):
         words = expand_query("упал и отравлен ядом").split()
         for term in ("falling", "poisoned", "poison"):

@@ -220,6 +220,16 @@ class RussianOutputTests(unittest.TestCase):
                                                    "items_added": ["Золотой ключ"], "items_removed": []}]})
         self.assertEqual(client.chat.completions.create.call_count, 1)
 
+    def test_common_game_notation_does_not_turn_a_russian_answer_into_502(self):
+        data = {
+            **TURN,
+            "narrative": "Вы провалили DC 15 на d20 и потеряли 2 HP.",
+        }
+        client = fake_client(completion(json.dumps(data)))
+        result = AIDungeonMaster(client).process_turn(turn_request())
+        self.assertEqual(result.narrative, data["narrative"])
+        self.assertEqual(client.chat.completions.create.call_count, 1)
+
     def test_language_and_json_errors_share_one_repair(self):
         mixed = completion(json.dumps({**TURN, "narrative": "You enter."}))
         for responses in ((completion("{}"), mixed), (mixed, completion("{}"))):

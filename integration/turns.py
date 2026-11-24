@@ -71,9 +71,14 @@ class IdempotentExecutor(Generic[T]):
     def forget(self, session_id: str) -> None:
         """Drop everything kept for a deleted session."""
         with self._registry_lock:
-            lock = self._session_locks.pop(session_id, None)
-        if lock is not None:
-            with lock:
+            lock = self._session_locks.get(session_id)
+            if lock is None:
+                self._remembered.pop(session_id, None)
+                return
+        with lock:
+            with self._registry_lock:
+                if self._session_locks.get(session_id) is lock:
+                    self._session_locks.pop(session_id, None)
                 self._remembered.pop(session_id, None)
 
     def _lock_for(self, session_id: str) -> threading.Lock:

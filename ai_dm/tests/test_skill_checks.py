@@ -1,9 +1,12 @@
 import json
+import logging
+import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from ai_dm.dm_engine import AIDungeonMaster
+from ai_dm.errors import InvalidResponseError
 from ai_dm.models import (
     CharacterState,
     CheckResolution,
@@ -19,6 +22,21 @@ def completion(payload):
         message=SimpleNamespace(content=json.dumps(payload, ensure_ascii=False)),
         finish_reason="stop",
     )])
+
+
+NO_CHECK = {"needs_check": False, "ability": None, "difficulty": None, "reason": ""}
+INCOMPLETE = {"needs_check": True, "ability": None, "difficulty": None, "reason": ""}
+
+
+def decision(ability, difficulty, reason="Дверь тяжёлая."):
+    return {"needs_check": True, "ability": ability, "difficulty": difficulty, "reason": reason}
+
+
+def safe_response(narrative):
+    return {
+        "narrative": narrative, "state_updates": [], "new_location": None, "dm_thoughts": "",
+        "requires_check": False, "check": None,
+    }
 
 
 def request():
@@ -63,65 +81,84 @@ class SkillCheckGenerationTests(unittest.TestCase):
 
     def test_plan_can_request_a_valid_engine_check(self):
         client = Mock()
-        client.chat.completions.create.return_value = completion({
-            "status": "check",
-            "response": None,
-            "check": {"ability": "strength", "difficulty": 15, "reason": "Дверь тяжёлая."},
-        })
+        client.chat.completions.create.return_value = completion(decision("strength", 15))
         result = AIDungeonMaster(client).plan_turn(request())
         self.assertEqual((result.status, result.check.ability, result.check.difficulty), ("check", "strength", 15))
+        self.assertEqual(client.chat.completions.create.call_count, 1, "a check needs only the small decision")
         call = client.chat.completions.create.call_args.kwargs
         self.assertEqual(call["response_format"]["type"], "json_schema")
-        self.assertEqual(call["response_format"]["json_schema"]["name"], "TurnPlan")
-        prompt = call["messages"][1]["content"]
-        self.assertIn('status="check"', prompt)
-        self.assertIn("check с обязательными полями", prompt)
-        self.assertNotIn("Тогда верни requires_check: true", prompt)
-        self.assertNotIn(json.dumps(TurnPlan.model_json_schema(), ensure_ascii=False, indent=2), prompt)
+        self.assertEqual(call["response_format"]["json_schema"]["name"], "CheckDecision")
 
-    def test_missing_check_is_repaired_with_the_strict_contract(self):
-        client = Mock()
-        client.chat.completions.create.side_effect = [
-            completion({"status": "check"}),
-            completion({
-                "status": "check",
-                "response": None,
-                "check": {
-                    "ability": "strength",
-                    "difficulty": 15,
-                    "reason": "Дверь тяжёлая.",
-                },
-            }),
-        ]
-
-        result = AIDungeonMaster(client).plan_turn(request())
-
-        self.assertEqual(result.check.ability, "strength")
-        self.assertEqual(client.chat.completions.create.call_count, 2)
-        repair = client.chat.completions.create.call_args_list[1].kwargs["messages"][-1]["content"]
-        self.assertIn("check", repair)
-        self.assertIn("Field required", repair)
-
-    def test_speculative_response_is_discarded_when_check_is_requested(self):
+    def test_a_speculative_response_next_to_the_decision_never_reaches_the_plan(self):
         client = Mock()
         client.chat.completions.create.return_value = completion({
-            "status": "check",
+            **decision("strength", 15),
             "response": {
                 "narrative": "Дверь уже открылась.",
-                "state_updates": [{
-                    "character_name": "Элиас", "hp_change": 5,
-                    "items_added": ["Награда"], "items_removed": [],
-                }],
-                "new_location": "Сокровищница",
-                "dm_thoughts": "",
+                "state_updates": [{"character_name": "Элиас", "hp_change": 5, "items_added": ["Награда"],
+                                   "items_removed": []}],
+                "new_location": "Сокровищница", "dm_thoughts": "",
             },
-            "check": {"ability": "strength", "difficulty": 15, "reason": "Дверь тяжёлая."},
         })
-
         result = AIDungeonMaster(client).plan_turn(request())
-
         self.assertEqual(result.status, "check")
         self.assertIsNone(result.response)
+
+    def test_the_decision_prompt_is_small_and_leaks_neither_plot_nor_history(self):
+        from ai_dm.models import TurnHistoryEntry
+
+        client = Mock()
+        client.chat.completions.create.return_value = completion(decision("strength", 15))
+        busy = request().model_copy(update={
+            "history": [TurnHistoryEntry(player_action="Осматриваю комнату.", narrative="Комната пуста.")],
+        })
+        AIDungeonMaster(client).plan_turn(busy)
+        text = " ".join(m["content"] for m in client.chat.completions.create.call_args.kwargs["messages"])
+        self.assertIn("Выламываю дверь.", text)
+        self.assertIn("Элиас", text)
+        self.assertIn('"strength": 14', text)
+        for absent in ("За дверью находится страж.", "Осматриваю комнату.", "Комната пуста.", "ИСТОРИЯ"):
+            self.assertNotIn(absent, text)
+
+    def test_a_safe_action_takes_a_decision_then_a_narration_with_the_roll_question_closed(self):
+        client = Mock()
+        client.chat.completions.create.side_effect = [
+            completion(NO_CHECK),
+            completion(safe_response("Вы осматриваете зал: пыль и тишина.")),
+        ]
+        safe = request().model_copy(update={"player_action": "Осматриваю зал."})
+        result = AIDungeonMaster(client).plan_turn(safe)
+        self.assertEqual((result.status, result.response.narrative), ("resolved", "Вы осматриваете зал: пыль и тишина."))
+        first, second = (c.kwargs for c in client.chat.completions.create.call_args_list)
+        self.assertEqual(first["response_format"]["json_schema"]["name"], "CheckDecision")
+        self.assertEqual(second["response_format"]["json_schema"]["name"], "TurnResponse")
+        narration_prompt = " ".join(m["content"] for m in second["messages"])
+        self.assertIn("Проверка характеристики в этом ходе не требуется", narration_prompt)
+        self.assertNotIn("Сначала реши, нужна ли проверка", narration_prompt)
+
+    def test_the_word_try_alone_does_not_force_a_roll_on_a_safe_action(self):
+        client = Mock()
+        client.chat.completions.create.side_effect = [
+            completion(NO_CHECK),
+            completion(safe_response("Вы спокойно осматриваете зал.")),
+        ]
+        safe = request().model_copy(update={"player_action": "Пытаюсь осмотреть зал."})
+        result = AIDungeonMaster(client).plan_turn(safe)
+        self.assertEqual((result.status, result.response.narrative), ("resolved", "Вы спокойно осматриваете зал."))
+
+    def test_a_narration_that_asks_for_a_check_after_the_decision_is_repaired(self):
+        client = Mock()
+        wants_check = safe_response("Вы осматриваете зал.")
+        wants_check.update(requires_check=True, check={"stat": "wisdom", "difficulty": 10})
+        client.chat.completions.create.side_effect = [
+            completion(NO_CHECK),
+            completion(wants_check),
+            completion(safe_response("Вы осматриваете зал.")),
+        ]
+        safe = request().model_copy(update={"player_action": "Осматриваю зал."})
+        result = AIDungeonMaster(client).plan_turn(safe)
+        self.assertEqual((result.status, result.response.requires_check), ("resolved", False))
+        self.assertEqual(client.chat.completions.create.call_count, 3)
 
     def test_failed_check_must_finish_with_failure_outcome(self):
         client = Mock()
@@ -146,27 +183,9 @@ class SkillCheckGenerationTests(unittest.TestCase):
         )
         self.assertEqual((result.status, result.outcome), ("resolved", "failure"))
 
-    def test_explicit_risk_repairs_a_resolved_answer_into_a_check(self):
-        resolved = {
-            "status": "resolved",
-            "check": None,
-            "response": {
-                "narrative": "Вы ударяетесь о дверь.",
-                "state_updates": [{
-                    "character_name": "Элиас", "hp_change": -1,
-                    "items_added": [], "items_removed": [],
-                }],
-                "new_location": None,
-                "dm_thoughts": "",
-            },
-        }
-        corrected = {
-            "status": "check",
-            "response": None,
-            "check": {"ability": "strength", "difficulty": 15, "reason": "Дверь тяжёлая."},
-        }
+    def test_an_openly_risky_action_cannot_be_waved_through_as_no_check(self):
         client = Mock()
-        client.chat.completions.create.side_effect = [completion(resolved), completion(corrected)]
+        client.chat.completions.create.side_effect = [completion(NO_CHECK), completion(decision("strength", 15))]
         risky = request().model_copy(update={"player_action": "Пытаюсь выбить дверь, рискуя ушибиться."})
         result = AIDungeonMaster(client).plan_turn(risky)
         self.assertEqual(result.status, "check")
@@ -174,16 +193,12 @@ class SkillCheckGenerationTests(unittest.TestCase):
 
     def test_unexplained_item_loss_in_a_resolved_plan_is_repaired(self):
         # The live qwen2.5:7b answer to "Осматриваю сундук." dropped the sword without a word.
-        def plan(state_updates):
-            return completion({"status": "resolved", "check": None, "response": {
-                "narrative": "Вы осматриваете сундук: крышка заклинила.",
-                "state_updates": state_updates, "new_location": None, "dm_thoughts": "",
-            }})
-
+        narrative = "Вы осматриваете сундук: крышка заклинила."
+        dropped = {**safe_response(narrative),
+                   "state_updates": [{"character_name": "Элиас", "items_removed": ["длинный меч"]}]}
         client = Mock()
         client.chat.completions.create.side_effect = [
-            plan([{"character_name": "Элиас", "items_removed": ["длинный меч"]}]),
-            plan([]),
+            completion(NO_CHECK), completion(dropped), completion(safe_response(narrative)),
         ]
         inspect = request()
         inspect.player_action = "Осматриваю сундук."
@@ -192,20 +207,95 @@ class SkillCheckGenerationTests(unittest.TestCase):
         result = AIDungeonMaster(client).plan_turn(inspect)
 
         self.assertEqual((result.status, result.response.state_updates), ("resolved", []))
-        self.assertEqual(client.chat.completions.create.call_count, 2)
-        repair = client.chat.completions.create.call_args_list[1].kwargs["messages"][-1]["content"]
+        self.assertEqual(client.chat.completions.create.call_count, 3)
+        repair = client.chat.completions.create.call_args_list[2].kwargs["messages"][-1]["content"]
         self.assertIn('меняет предметы ["длинный меч"]', repair)
 
-    def test_turn_prompt_keeps_finds_within_the_scene_and_hidden_plot(self):
+    def test_narration_prompt_keeps_finds_within_the_scene_and_hidden_plot(self):
         client = Mock()
-        client.chat.completions.create.return_value = completion({
-            "status": "check", "response": None,
-            "check": {"ability": "strength", "difficulty": 10, "reason": "Крышка заклинила."},
-        })
-        AIDungeonMaster(client).plan_turn(request())
-        prompt = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        client.chat.completions.create.side_effect = [
+            completion(NO_CHECK), completion(safe_response("Вы осматриваете сундук.")),
+        ]
+        inspect = request()
+        inspect.player_action = "Осматриваю сундук."
+        AIDungeonMaster(client).plan_turn(inspect)
+        # The first request only decides on a roll; the turn rules live in the narration request.
+        prompt = client.chat.completions.create.call_args_list[1].kwargs["messages"][1]["content"]
         self.assertIn("других\nсекретов нет, описывай только перечисленное", prompt)
         self.assertIn("Не убирай предмет, о потере которого narrative молчит.", prompt)
+
+    def test_an_incomplete_decision_is_repaired_with_a_message_that_names_the_gap(self):
+        client = Mock()
+        client.chat.completions.create.side_effect = [completion(INCOMPLETE), completion(decision("strength", 15))]
+        result = AIDungeonMaster(client).plan_turn(request())
+        self.assertEqual(result.check.ability, "strength")
+        repair = client.chat.completions.create.call_args_list[1].kwargs["messages"][-1]["content"]
+        self.assertIn("needs_check true requires ability, difficulty, reason", repair)
+
+    def test_an_ability_missing_from_the_hero_sheet_is_repaired(self):
+        sheet = request()
+        sheet.game_state.active_characters[0].abilities.pop("charisma")
+        client = Mock()
+        client.chat.completions.create.side_effect = [completion(decision("charisma", 10)), completion(decision("strength", 15))]
+        result = AIDungeonMaster(client).plan_turn(sheet)
+        self.assertEqual(result.check.ability, "strength")
+
+
+class ReportedFailureTests(unittest.TestCase):
+    """The failure from the field report: a local 7B model, a risky Russian action, HTTP 502 and no clue why."""
+
+    ACTION = "Пытаюсь перепрыгнуть широкую пропасть по скользкому краю."
+
+    def risky(self):
+        return request().model_copy(update={"player_action": self.ACTION})
+
+    def test_two_unusable_decisions_end_in_a_controlled_error_that_logs_both_attempts(self):
+        client = Mock()
+        client.chat.completions.create.side_effect = [completion(NO_CHECK), completion(INCOMPLETE)]
+        with self.assertLogs("ai_dm.dm_engine", "WARNING") as logs:
+            with self.assertRaises(InvalidResponseError):
+                AIDungeonMaster(client).plan_turn(self.risky())
+        self.assertEqual(len(logs.output), 2)
+        first, second = logs.output
+        self.assertIn("operation=plan.decision", first)
+        self.assertIn("attempt=1 repair=next", first)
+        self.assertIn("явно описал попытку", first)
+        self.assertIn("attempt=2 repair=failed", second)
+        self.assertIn("needs_check true requires ability, difficulty, reason", second)
+
+    def test_the_logged_reasons_never_contain_the_raw_answer_or_the_plot(self):
+        leaky = {"needs_check": True, "ability": None, "difficulty": None, "reason": "SECRET-RAW-TEXT"}
+        client = Mock()
+        client.chat.completions.create.side_effect = [completion(leaky), completion(leaky)]
+        with self.assertLogs("ai_dm.dm_engine", "WARNING") as logs, self.assertRaises(InvalidResponseError):
+            AIDungeonMaster(client).plan_turn(self.risky())
+        joined = "\n".join(logs.output)
+        for secret in ("SECRET-RAW-TEXT", "За дверью находится страж.", self.ACTION):
+            self.assertNotIn(secret, joined)
+
+    def test_raw_logging_is_off_by_default_and_opt_in(self):
+        for flag, expected in ((None, False), ("1", True)):
+            client = Mock()
+            client.chat.completions.create.return_value = completion(decision("strength", 15))
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("AI_DM_LOG_RAW", None)
+                if flag:
+                    os.environ["AI_DM_LOG_RAW"] = flag
+                with self.assertLogs("ai_dm.dm_engine", "DEBUG") as logs:
+                    logging.getLogger("ai_dm.dm_engine").info("sentinel")
+                    AIDungeonMaster(client).plan_turn(request())
+            has_raw = any("RAW AI RESPONSE" in line or "AI REQUEST" in line for line in logs.output)
+            self.assertEqual(has_raw, expected, flag)
+
+    def test_a_good_second_answer_recovers_the_turn_and_logs_the_first_failure(self):
+        client = Mock()
+        client.chat.completions.create.side_effect = [
+            completion(NO_CHECK), completion(decision("dexterity", 15, "Скользкий край.")),
+        ]
+        with self.assertLogs("ai_dm.dm_engine", "WARNING") as logs:
+            plan = AIDungeonMaster(client).plan_turn(self.risky())
+        self.assertEqual((plan.status, plan.check.ability, plan.check.reason), ("check", "dexterity", "Скользкий край."))
+        self.assertEqual(len(logs.output), 1)
 
 
 if __name__ == "__main__":

@@ -12,9 +12,7 @@ const PIXEL_DIGITS = {
   "?": ["01110", "10001", "00001", "00010", "00100", "00000", "00100"],
 };
 
-function signed(value) {
-  return value >= 0 ? `+${value}` : String(value);
-}
+import { signed } from "./format.js?v=20261124-1";
 
 export function createDiceView(elements, translate) {
   let ticker = null;
@@ -57,7 +55,7 @@ export function createDiceView(elements, translate) {
     renderValue(check.roll);
     elements.d20.className = `d20 is-settling ${check.success ? "is-success" : "is-failure"}`;
     elements.title.textContent = translate(check.success ? "check.success" : "check.failure");
-    elements.formula.textContent = `${check.roll} ${signed(check.modifier)} = ${check.total} vs DC ${check.difficulty}`;
+    elements.formula.textContent = `${check.roll} ${signed(check.modifier, true)} = ${check.total} vs DC ${check.difficulty}`;
     await new Promise((resolve) => globalThis.setTimeout(resolve, 850));
     elements.overlay.hidden = true;
     elements.d20.className = "d20";
