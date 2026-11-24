@@ -242,6 +242,12 @@ class ContextBudgetTests(unittest.TestCase):
                     self.assertEqual(len(calls), 2)
                     self.assertIn("лимит токенов", calls[1].kwargs["messages"][-1]["content"])
                     self.assertEqual(calls[1].kwargs["max_tokens"], 333)
+                    repair_messages = calls[1].kwargs["messages"]
+                    self.assertEqual([message["role"] for message in repair_messages],
+                                     ["system", "user", "user"])
+                    self.assertNotIn(json.dumps(data), " ".join(
+                        message["content"] for message in repair_messages[2:]
+                    ))
 
     def test_budget_errors_preserve_demo_state_and_history(self):
         for repair in (False, True):

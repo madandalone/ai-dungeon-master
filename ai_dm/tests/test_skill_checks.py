@@ -191,6 +191,39 @@ class SkillCheckGenerationTests(unittest.TestCase):
         self.assertEqual(result.status, "check")
         self.assertEqual(client.chat.completions.create.call_count, 2)
 
+    def test_unexplained_item_loss_in_a_resolved_plan_is_repaired(self):
+        # The live qwen2.5:7b answer to "Осматриваю сундук." dropped the sword without a word.
+        narrative = "Вы осматриваете сундук: крышка заклинила."
+        dropped = {**safe_response(narrative),
+                   "state_updates": [{"character_name": "Элиас", "items_removed": ["длинный меч"]}]}
+        client = Mock()
+        client.chat.completions.create.side_effect = [
+            completion(NO_CHECK), completion(dropped), completion(safe_response(narrative)),
+        ]
+        inspect = request()
+        inspect.player_action = "Осматриваю сундук."
+        inspect.game_state.active_characters[0].inventory = ["длинный меч"]
+
+        result = AIDungeonMaster(client).plan_turn(inspect)
+
+        self.assertEqual((result.status, result.response.state_updates), ("resolved", []))
+        self.assertEqual(client.chat.completions.create.call_count, 3)
+        repair = client.chat.completions.create.call_args_list[2].kwargs["messages"][-1]["content"]
+        self.assertIn('меняет предметы ["длинный меч"]', repair)
+
+    def test_narration_prompt_keeps_finds_within_the_scene_and_hidden_plot(self):
+        client = Mock()
+        client.chat.completions.create.side_effect = [
+            completion(NO_CHECK), completion(safe_response("Вы осматриваете сундук.")),
+        ]
+        inspect = request()
+        inspect.player_action = "Осматриваю сундук."
+        AIDungeonMaster(client).plan_turn(inspect)
+        # The first request only decides on a roll; the turn rules live in the narration request.
+        prompt = client.chat.completions.create.call_args_list[1].kwargs["messages"][1]["content"]
+        self.assertIn("других\nсекретов нет, описывай только перечисленное", prompt)
+        self.assertIn("Не убирай предмет, о потере которого narrative молчит.", prompt)
+
     def test_an_incomplete_decision_is_repaired_with_a_message_that_names_the_gap(self):
         client = Mock()
         client.chat.completions.create.side_effect = [completion(INCOMPLETE), completion(decision("strength", 15))]

@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#000000">
     <title>AI Dungeon Master</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="styles.css?v=20261124-1">
+    <link rel="stylesheet" href="styles.css?v=20261124-2">
   </head>
   <body>
     <div class="app-shell" id="app-shell">
@@ -112,7 +112,7 @@
               <p class="panel-eyebrow" data-i18n="characters.createEyebrow">НОВЫЙ ПУТНИК</p><h2 data-i18n="characters.createTitle">Создать героя</h2><p class="panel-copy" data-i18n="characters.createBody">Дайте герою имя, коротко опишите его роль и укажите стартовые параметры.</p><p class="server-form-notice" id="character-form-notice" role="status">Выберите серверную сессию</p>
               <form id="character-form" class="stack-form">
                 <label><span data-i18n="characters.name">Имя</span><input id="character-name" name="character-name" type="text" maxlength="60" required data-i18n-placeholder="characters.namePlaceholder" placeholder="Например, Элиас"></label>
-                <label><span data-i18n="characters.concept">Кто этот герой</span><input id="character-concept" name="character-concept" type="text" maxlength="120" data-i18n-placeholder="characters.conceptPlaceholder" placeholder="Плут, лесной следопыт, боевой маг…"></label>
+                <label><span data-i18n="characters.concept">Роль и предыстория</span><textarea id="character-concept" name="character-concept" rows="3" maxlength="400" data-i18n-placeholder="characters.conceptPlaceholder" placeholder="Пекарь, который ищет пропавшего наставника…"></textarea></label>
                 <label><span data-i18n="characters.hp">Максимум здоровья</span><input id="character-hp" name="character-hp" type="number" min="1" max="999" value="10" required></label>
                 <fieldset><legend data-i18n="characters.stats">Характеристики</legend><div id="stat-rows" class="ability-grid">
                   <label><span data-i18n="ability.strength">Сила</span><input data-ability="strength" type="number" min="1" max="20" value="10" required></label>
@@ -126,8 +126,9 @@
                 <p class="form-message" id="character-message" role="status"></p><button class="primary-button" type="submit" data-i18n="characters.create">Добавить героя</button>
               </form>
               <div class="character-next-actions" id="character-next-actions" hidden>
-                <p data-i18n="characters.nextPrompt">Герой добавлен. Что дальше?</p>
+                <p id="character-next-prompt" data-i18n="characters.nextPrompt">Герой добавлен. Что дальше?</p>
                 <button class="secondary-button" id="add-another-hero" type="button" data-i18n="characters.addAnother">Добавить ещё героя</button>
+                <button class="primary-button" id="start-adventure" type="button" data-i18n="characters.startAdventure">Начать приключение</button>
                 <button class="primary-button" id="go-to-game" type="button" data-i18n="characters.goToGame">Перейти к игре</button>
               </div>
             </article>
@@ -147,7 +148,12 @@
             <article class="pixel-panel saved-sessions-panel"><div class="panel-heading compact"><div><p class="panel-eyebrow" data-i18n="session.savedEyebrow">СОХРАНЕНО В ЭТОЙ ВКЛАДКЕ</p><h2 data-i18n="session.savedTitle">Ваши сессии</h2></div></div><div id="session-list" class="session-list"></div></article>
             <article class="pixel-panel session-form-panel">
               <p class="panel-eyebrow" data-i18n="session.newEyebrow">НОВАЯ ИСТОРИЯ</p><h2 data-i18n="session.newTitle">Создать сессию</h2><p class="panel-copy" data-i18n="session.newBody">Название поможет быстро узнать эту игру среди других приключений.</p>
-              <form id="create-session-form" class="stack-form"><label><span data-i18n="session.name">Название приключения</span><input id="session-name" name="session-name" type="text" maxlength="80" required data-i18n-placeholder="session.namePlaceholder" placeholder="Тайна затонувшего храма"></label><button class="primary-button" type="submit" data-i18n="session.create">Создать на сервере</button></form>
+              <form id="create-session-form" class="stack-form">
+                <label><span data-i18n="session.name">Название сессии</span><input id="session-name" name="session-name" type="text" maxlength="80" required data-i18n-placeholder="session.namePlaceholder" placeholder="Тайна затонувшего храма"></label>
+                <label><span data-i18n="session.theme">Тема и сеттинг</span><input id="session-theme" name="session-theme" type="text" maxlength="300" required data-i18n-placeholder="session.themePlaceholder" placeholder="Мрачное фэнтези в старой пекарне"></label>
+                <label><span data-i18n="session.hook">Начальная завязка</span><textarea id="session-hook" name="session-hook" rows="3" maxlength="500" data-i18n-placeholder="session.hookPlaceholder" placeholder="По ночам печь оживает, а из кладовой пропадает хлеб."></textarea></label>
+                <button class="primary-button" type="submit" data-i18n="session.create">Создать на сервере</button>
+              </form>
               <div class="form-divider"><span data-i18n="common.or">или</span></div>
               <form id="join-session-form" class="stack-form"><label><span data-i18n="session.code">Код сессии</span><input id="join-session-id" name="join-session-id" type="text" maxlength="80" required data-i18n-placeholder="session.codePlaceholder" placeholder="Вставьте ID сессии"></label><button class="secondary-button" type="submit" data-i18n="session.join">Подключиться</button><p class="context-hint" data-i18n="session.joinHint">Код проверяется через Backend, затем загружается состояние игры.</p></form>
               <p class="form-message" id="session-result" role="status"></p>
@@ -177,6 +183,6 @@
         <p class="dice-formula" id="dice-formula"></p>
       </div>
     </div>
-    <script type="module" src="js/app.js?v=20261124-1"></script>
+    <script type="module" src="js/app.js?v=20261124-2"></script>
   </body>
 </html>

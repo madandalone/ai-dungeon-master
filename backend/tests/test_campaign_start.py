@@ -111,6 +111,41 @@ class CampaignStartApiTests(unittest.TestCase):
         self.assertEqual((record["started"], record["hidden_plot"]), (True, PLOT))
         self.assertEqual(record["room_context"], "Вода по колено, в центре зала саркофаг.")
 
+    def test_session_setup_is_stored_exposed_safely_and_used_to_start(self):
+        dm = self.use(WritingDM())
+        sid = self.new_session(
+            theme="Городское фэнтези в старой пекарне",
+            opening_hook="Ночью из печи слышен голос пропавшего пекаря.",
+        )
+
+        before = self.client.get(f"/sessions/{sid}/state").json()
+        self.assertEqual(before["campaign"], {
+            "started": False,
+            "title": "",
+            "theme": "Городское фэнтези в старой пекарне",
+            "opening_hook": "Ночью из печи слышен голос пропавшего пекаря.",
+        })
+
+        response = self.client.post(f"/sessions/{sid}/campaign", json={})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(dm.campaigns[0].setting_theme, "Городское фэнтези в старой пекарне")
+        self.assertEqual(dm.campaigns[0].opening_hook, "Ночью из печи слышен голос пропавшего пекаря.")
+        public = response.json()["state"]
+        self.assertEqual(public["campaign"]["started"], True)
+        self.assertEqual(public["campaign"]["title"], "Склеп некроманта")
+        self.assertEqual(public["location"], "Затопленный склеп")
+        self.assertEqual(public["log"][0]["text"], INTRO)
+
+    def test_name_only_clients_keep_the_default_setup(self):
+        self.use(WritingDM())
+        response = self.client.post("/sessions", json={"name": "Old client"})
+        self.assertEqual(response.status_code, 200)
+        sid = response.json()["id"]
+        campaign = self.client.get(f"/sessions/{sid}/state").json()["campaign"]
+        self.assertEqual(campaign["theme"], backend.DEFAULT_THEME)
+        self.assertEqual(campaign["opening_hook"], "")
+
     def test_repeating_the_request_does_not_ask_the_dm_again(self):
         dm = self.use(WritingDM())
         sid = self.new_session()
@@ -233,6 +268,7 @@ class CampaignStorageTests(unittest.TestCase):
             )
         self.assertEqual(self.store.load_campaign("s1"), {
             "started": False, "title": "", "hidden_plot": "Test campaign", "room_context": "",
+            "theme": backend.DEFAULT_THEME, "opening_hook": "",
         })
         self.assertEqual(self.store.load_session("s1")[2], [])
 

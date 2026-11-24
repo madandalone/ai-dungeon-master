@@ -5,6 +5,7 @@ export function emptyPublicState(sessionId = "", sessionName = "", connection = 
   return {
     connection, session_id: String(sessionId), session_name: String(sessionName),
     revision: 0, turn_number: 0, location: "", characters: [], log: [], pending_turn: null,
+    campaign: { started: false, title: "", theme: "", opening_hook: "" },
   };
 }
 
@@ -41,6 +42,12 @@ export function normalizePublicState(value, fallbackId = "") {
     revision: Number.isInteger(revision) && revision >= 0 ? revision : 0,
     turn_number: Number.isInteger(turnNumber) && turnNumber >= 0 ? turnNumber : 0,
     location: String(source.location || ""),
+    campaign: {
+      started: Boolean(source.campaign?.started),
+      title: String(source.campaign?.title || ""),
+      theme: String(source.campaign?.theme || ""),
+      opening_hook: String(source.campaign?.opening_hook || ""),
+    },
     characters: Array.isArray(source.characters) ? source.characters.map(copyCharacter) : [],
     pending_turn: source.pending_turn && typeof source.pending_turn === "object"
       ? { ...source.pending_turn, resolved_checks: [...(source.pending_turn.resolved_checks || [])] }

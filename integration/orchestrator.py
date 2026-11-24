@@ -70,11 +70,14 @@ class TurnOrchestrator:
         """Start from a campaign written by a person; needs no DM ability."""
         return author_campaign(state, campaign, dice)
 
-    def start_campaign(self, state: GameState, theme: str, dice: Dice, monster: str = "goblin") -> CampaignStart:
+    def start_campaign(
+        self, state: GameState, theme: str, dice: Dice, monster: str = "goblin",
+        opening_hook: str = "",
+    ) -> CampaignStart:
         """Create the hidden plot for this party and move it into the opening scene (see integration.campaign)."""
         if not self.can_start_campaign:
             raise ValueError("This Dungeon Master cannot start a campaign")
-        return begin_campaign(self._dm, state, theme, dice, monster)
+        return begin_campaign(self._dm, state, theme, dice, monster, opening_hook)
 
     def play_turn(
         self,

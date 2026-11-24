@@ -7,9 +7,9 @@ from backend.storage import SQLiteSessionStore, StateRevisionConflict
 from engine.models import Character, GameState
 
 
-def make_state(revision=0, hp=10):
+def make_state(revision=0, hp=10, session_id="test"):
     return GameState(
-        session_id="test",
+        session_id=session_id,
         revision=revision,
         turn_number=revision,
         location_id="forest",
@@ -46,6 +46,19 @@ class TestSQLiteSessionStore(unittest.TestCase):
         self.assertEqual(state.characters[0].hp, 10)
         self.assertTrue(state.world_flags["door_open"])
         self.assertEqual(history, [])
+
+    def test_restore_campaign_setup_before_the_campaign_starts(self):
+        self.store.save_session(
+            "setup", "Setup", make_state(session_id="setup"),
+            campaign_theme="Портовый детектив",
+            opening_hook="В гавани найден корабль без команды.",
+        )
+
+        campaign = SQLiteSessionStore(self.path).load_campaign("setup")
+
+        self.assertEqual(campaign["theme"], "Портовый детектив")
+        self.assertEqual(campaign["opening_hook"], "В гавани найден корабль без команды.")
+        self.assertFalse(campaign["started"])
 
     def test_save_and_restore_turn(self):
         entry = TurnHistoryEntry(

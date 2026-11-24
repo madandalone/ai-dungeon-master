@@ -1,6 +1,6 @@
-import { applyTranslations, getLanguage, t } from "./i18n.js?v=20261124-1";
-import { characterArchetype, healthPercent, healthTone, iconMarkup, orderCharactersByActive } from "./visuals.js?v=20261124-1";
-import { characterName, signed } from "./format.js?v=20261124-1";
+import { applyTranslations, getLanguage, t } from "./i18n.js?v=20261124-2";
+import { characterArchetype, healthPercent, healthTone, iconMarkup, orderCharactersByActive } from "./visuals.js?v=20261124-2";
+import { characterName, signed } from "./format.js?v=20261124-2";
 
 const ABILITIES = new Set([
   "strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma",
@@ -132,13 +132,17 @@ export class AppView {
     const state = this.store.current();
     const online = this.store.backend === "online";
     const turnBusy = this.store.operation.turn !== "idle";
-    const canPlay = online && state?.connection === "server" && state.characters.length > 0;
+    const campaignBusy = Boolean(this.store.operation.campaign);
+    const canPlay = online && state?.connection === "server" && state.characters.length > 0
+      && state.campaign.started;
     setFormDisabled(this.e.createSessionForm, !online || Boolean(this.store.operation.session));
     setFormDisabled(this.e.joinSessionForm, !online || Boolean(this.store.operation.session));
-    const canCreate = online && state?.connection === "server" && !this.store.operation.character;
+    const canCreate = online && state?.connection === "server" && !this.store.operation.character && !campaignBusy;
     setFormDisabled(this.e.characterForm, !canCreate);
     setFormDisabled(this.e.actionForm, !canPlay || turnBusy || Boolean(state?.pending_turn));
-    this.e.characterFormNotice.textContent = this.store.operation.character
+    this.e.characterFormNotice.textContent = campaignBusy
+      ? t("characters.startingAdventure")
+      : this.store.operation.character
       ? t("characters.creating")
       : canCreate ? t("characters.ready") : t("characters.localReadOnly");
     const phase = this.store.operation.turn;
@@ -147,15 +151,14 @@ export class AppView {
     else if (!state.characters.length) hint = "game.noCharacters";
     else if (!online) hint = "offline.body";
     else if (state.connection !== "server") hint = "game.localReadOnly";
-    else if (phase === "planning") hint = state.turn_number === 0 ? "game.creatingCampaign" : "game.planningCheck";
+    else if (!state.campaign.started) hint = "game.startCampaignHint";
+    else if (phase === "planning") hint = "game.planningCheck";
     else if (phase === "rolling" || phase === "resolving") hint = "check.waitingForMaster";
     else if (state.pending_turn) hint = "check.pendingHint";
     this.e.actionHint.textContent = t(hint);
     this.e.actionForm.setAttribute("aria-busy", String(turnBusy));
     this.e.actionSubmit.classList.toggle("is-pending", turnBusy);
-    this.e.actionSubmitLabel.textContent = t(
-      phase !== "idle" ? "game.thinking" : this.store.pendingAttempt ? "game.retryTurn" : "game.send",
-    );
+    this.e.actionSubmitLabel.textContent = t(this.store.pendingAttempt ? "game.retryTurn" : "game.send");
     this.e.syncSession.disabled = !online || state?.connection !== "server" || turnBusy || this.store.operation.sync;
     this.e.syncSession.setAttribute("aria-busy", String(this.store.operation.sync));
   }
@@ -302,7 +305,10 @@ export class AppView {
       return;
     }
     if (!state.log.length) {
-      this.e.log.append(emptyMessage(t("game.noLog")));
+      this.e.log.append(emptyMessage(
+        t(state.campaign.started ? "game.noLog" : "game.noCampaign"),
+        state.campaign.started ? null : { section: "characters", label: "onboarding.startAdventure" },
+      ));
       return;
     }
     const fragment = document.createDocumentFragment();
@@ -402,7 +408,15 @@ export class AppView {
       characters.forEach((character) => fragment.append(this.characterCard(character)));
       this.e.characterGrid.append(fragment);
     }
-    this.e.characterNextActions.hidden = !this.store.showCharacterNext || !characters.length;
+    const needsStart = Boolean(state && state.connection === "server" && characters.length && !state.campaign.started);
+    this.e.characterNextActions.hidden = !characters.length || (!needsStart && !this.store.showCharacterNext);
+    this.e.startAdventure.hidden = !needsStart;
+    this.e.startAdventure.disabled = Boolean(this.store.operation.campaign);
+    this.e.goToGame.hidden = !state?.campaign.started;
+    this.e.goToGame.disabled = Boolean(this.store.operation.campaign);
+    this.e.addAnotherHero.disabled = Boolean(this.store.operation.campaign);
+    this.e.characterNextPrompt.textContent = t(state?.campaign.started
+      ? "characters.joinedPrompt" : "characters.nextPrompt");
   }
 
   renderWorld() {

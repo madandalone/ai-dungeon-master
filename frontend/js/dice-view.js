@@ -12,7 +12,7 @@ const PIXEL_DIGITS = {
   "?": ["01110", "10001", "00001", "00010", "00100", "00000", "00100"],
 };
 
-import { signed } from "./format.js?v=20261124-1";
+import { signed } from "./format.js?v=20261124-2";
 
 export function createDiceView(elements, translate) {
   let ticker = null;

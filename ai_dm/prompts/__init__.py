@@ -6,7 +6,15 @@ from pathlib import Path
 from string import Template
 
 from ai_dm.errors import ConfigurationError
-from ai_dm.models import CampaignStartRequest, TurnRequest
+from ai_dm.models import (
+    CAMPAIGN_TITLE_MAX_CHARS,
+    HIDDEN_PLOT_MAX_CHARS,
+    INTRO_NARRATIVE_MAX_CHARS,
+    ROOM_CONTEXT_MAX_CHARS,
+    STARTING_LOCATION_MAX_CHARS,
+    CampaignStartRequest,
+    TurnRequest,
+)
 from ai_dm.memory import HistorySelection
 from ai_dm.validation import MAX_DIFFICULTY, MIN_DIFFICULTY
 
@@ -70,8 +78,14 @@ class PromptTemplates:
         return self._render(
             "campaign",
             setting_theme=request.setting_theme,
+            opening_hook=request.opening_hook or "Не задана: придумай по теме и героям.",
             characters=json.dumps([c.model_dump() for c in request.characters], ensure_ascii=False),
             monster_stats=json.dumps(monster_stats, ensure_ascii=False) if monster_stats else "Базовый противник",
+            campaign_title_max=str(CAMPAIGN_TITLE_MAX_CHARS),
+            hidden_plot_max=str(HIDDEN_PLOT_MAX_CHARS),
+            starting_location_max=str(STARTING_LOCATION_MAX_CHARS),
+            room_context_max=str(ROOM_CONTEXT_MAX_CHARS),
+            intro_narrative_max=str(INTRO_NARRATIVE_MAX_CHARS),
         )
 
     def check_prompt(self, request: TurnRequest) -> str:

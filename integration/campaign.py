@@ -44,6 +44,7 @@ def begin_campaign(
     theme: str,
     dice: Dice,
     monster: str = "goblin",
+    opening_hook: str = "",
 ) -> CampaignStart:
     """Ask the DM for a hidden plot built around the party, then move the party into the opening scene.
 
@@ -58,6 +59,7 @@ def begin_campaign(
 
     request = CampaignStartRequest(
         setting_theme=theme.strip(),
+        opening_hook=opening_hook.strip(),
         characters=to_dm_state(state).active_characters,
         monster_encounter=monster,
     )

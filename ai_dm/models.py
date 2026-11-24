@@ -264,14 +264,40 @@ class CheckResolution(RootModel[CheckResolutionVariant]):
 
 
 # --- Модели для функции старта кампании ---
+CAMPAIGN_TITLE_MAX_CHARS = 80
+HIDDEN_PLOT_MAX_CHARS = 900
+STARTING_LOCATION_MAX_CHARS = 100
+ROOM_CONTEXT_MAX_CHARS = 350
+INTRO_NARRATIVE_MAX_CHARS = 600
+
+
 class CampaignStartRequest(BaseModel):
     setting_theme: str = Field(description="Тема или пожелание к приключению (напр. 'Заброшенная крипта')")
+    opening_hook: str = Field(
+        "", max_length=500,
+        description="Начальная ситуация или пожелание пользователя к завязке",
+    )
     characters: List[CharacterState]
     monster_encounter: str = Field("goblin", description="Индекс монстра из D&D 5e API (напр. goblin, skeleton, wolf)")
 
 class CampaignStartResponse(BaseModel):
-    campaign_title: str = Field(description="Название приключения")
-    hidden_plot: str = Field(description="Скрытая тайна сюжета (известна только Мастеру)")
-    starting_location: str = Field(description="Название первой локации")
-    room_context: str = Field(description="Описание обстановки стартовой комнаты")
-    intro_narrative: str = Field(description="Вводный атмосферный текст для игроков (завязка истории)")
+    campaign_title: str = Field(
+        max_length=CAMPAIGN_TITLE_MAX_CHARS,
+        description="Короткое название приключения",
+    )
+    hidden_plot: str = Field(
+        max_length=HIDDEN_PLOT_MAX_CHARS,
+        description="Компактная скрытая тайна сюжета, известная только Мастеру",
+    )
+    starting_location: str = Field(
+        max_length=STARTING_LOCATION_MAX_CHARS,
+        description="Короткое название первой локации",
+    )
+    room_context: str = Field(
+        max_length=ROOM_CONTEXT_MAX_CHARS,
+        description="Краткое описание наблюдаемой обстановки стартовой комнаты",
+    )
+    intro_narrative: str = Field(
+        max_length=INTRO_NARRATIVE_MAX_CHARS,
+        description="Короткая завязка истории для игроков",
+    )

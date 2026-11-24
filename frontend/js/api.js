@@ -76,6 +76,14 @@ function isPendingTurn(value) {
     && typeof value.can_cancel === "boolean";
 }
 
+function isCampaign(value) {
+  return isObject(value)
+    && typeof value.started === "boolean"
+    && typeof value.title === "string"
+    && typeof value.theme === "string"
+    && typeof value.opening_hook === "string";
+}
+
 function eventBase(event) {
   if (!isObject(event) || typeof event.action_id !== "string" || !isCounter(event.sequence)) return null;
   return { type: event.type, action_id: event.action_id, sequence: event.sequence };
@@ -184,6 +192,7 @@ export function isPublicState(value) {
     && Array.isArray(value.log)
     && isCounter(value.revision)
     && isCounter(value.turn_number)
+    && (value.campaign === undefined || isCampaign(value.campaign))
     && (value.pending_turn === undefined || value.pending_turn === null || isPendingTurn(value.pending_turn));
 }
 
@@ -200,12 +209,27 @@ export async function fetchHealth(fetcher = globalThis.fetch) {
   }
 }
 
-export async function createSession(name, fetcher = globalThis.fetch) {
+export async function createSession(session, fetcher = globalThis.fetch) {
+  const payload = typeof session === "string" ? { name: session } : {
+    name: session.name,
+    theme: session.theme,
+    opening_hook: session.openingHook,
+  };
   const body = await requestJson(`${API_BASE}/sessions`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
   }, fetcher);
   if (!body || typeof body.id !== "string" || typeof body.name !== "string") throw new ApiError("invalid_response");
   return { id: body.id, name: body.name };
+}
+
+export async function startCampaign(sessionId, fetcher = globalThis.fetch) {
+  const body = await requestJson(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/campaign`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  }, fetcher);
+  if (typeof body?.created !== "boolean" || typeof body.title !== "string" || !isPublicState(body.state)) {
+    throw new ApiError("invalid_response");
+  }
+  return body;
 }
 
 export async function deleteSession(sessionId, fetcher = globalThis.fetch) {
@@ -313,7 +337,8 @@ export class ApiClient {
   }
 
   health() { return fetchHealth(this.fetcher); }
-  createSession(name) { return createSession(name, this.fetcher); }
+  createSession(session) { return createSession(session, this.fetcher); }
+  startCampaign(sessionId) { return startCampaign(sessionId, this.fetcher); }
   deleteSession(sessionId) { return deleteSession(sessionId, this.fetcher); }
   sessionState(sessionId) { return fetchSessionState(sessionId, this.fetcher); }
   createCharacter(sessionId, character) { return createCharacter(sessionId, character, this.fetcher); }

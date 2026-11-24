@@ -180,12 +180,14 @@ class AIDungeonMaster:
                 raise error from exc
 
             raw = None
+            output_was_truncated = False
             try:
                 raw = _response_text(response)
                 if _log_raw_enabled():
                     logger.info("RAW AI RESPONSE operation=%s attempt=%d finish_reason=%s raw=%s", operation,
                                 attempt + 1, getattr(response.choices[0], "finish_reason", None), raw)
-                if getattr(response.choices[0], "finish_reason", None) == "length":
+                output_was_truncated = getattr(response.choices[0], "finish_reason", None) == "length"
+                if output_was_truncated:
                     raise ValueError("Достигнут лимит токенов ответа. Сократи текст и верни полный JSON.")
                 result = response_model.model_validate_json(_strip_json_fence(raw))
                 if validate_response is not None:
@@ -223,7 +225,10 @@ class AIDungeonMaster:
                     ) from exc
                 repair_used = True
                 repair_messages = []
-                if raw is not None:
+                # A length-truncated answer is incomplete and often ends inside a JSON string. Feeding
+                # it back wastes context and encourages small local models to continue the same verbose
+                # answer. For semantic/schema errors the original answer is still useful to repair.
+                if raw is not None and not output_was_truncated:
                     repair_messages.append({"role": "assistant", "content": raw})
                 repair_messages.append({
                     "role": "user",

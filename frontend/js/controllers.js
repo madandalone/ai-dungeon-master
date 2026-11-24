@@ -1,10 +1,10 @@
-import { ApiError } from "./api.js?v=20261124-1";
-import { getLanguage, setLanguage, t } from "./i18n.js?v=20261124-1";
-import { emptyPublicState } from "./state.js?v=20261124-1";
+import { ApiError } from "./api.js?v=20261124-2";
+import { getLanguage, setLanguage, t } from "./i18n.js?v=20261124-2";
+import { emptyPublicState } from "./state.js?v=20261124-2";
 import {
   applyTurnResult, createTurnAttempt, failureMessageKey, mergeServerState,
   replaceServerState, stateChanges, turnReceipts, warningMessageKey,
-} from "./turns.js?v=20261124-1";
+} from "./turns.js?v=20261124-2";
 
 function sessionErrorKey(error) {
   if (error?.code === "not_found") return "session.notFound";
@@ -88,15 +88,17 @@ export class SessionController {
   async create(event) {
     event.preventDefault();
     const name = this.e.sessionName.value.trim();
-    if (!name) {
-      this.e.sessionResult.textContent = t("session.nameRequired");
+    const theme = this.e.sessionTheme.value.trim();
+    const openingHook = this.e.sessionHook.value.trim();
+    if (!name || !theme) {
+      this.e.sessionResult.textContent = t(!name ? "session.nameRequired" : "session.themeRequired");
       return;
     }
     if (this.store.backend !== "online" || this.store.operation.session) return;
     this.store.setOperation("session", "create");
     this.e.sessionResult.textContent = t("session.creating");
     try {
-      const session = await this.api.createSession(name);
+      const session = await this.api.createSession({ name, theme, openingHook });
       this.store.putSession(emptyPublicState(session.id, session.name, "server"), true);
       const loaded = await this.refresh(session.id, session.name, { announce: true, activate: true });
       if (!loaded) return;
@@ -123,7 +125,7 @@ export class SessionController {
       if (!loaded) return;
       this.e.sessionResult.textContent = t("session.joined");
       this.e.joinSessionForm.reset();
-      this.store.setSection(this.store.current()?.characters.length ? "game" : "characters");
+      this.store.setSection(this.store.current()?.campaign.started ? "game" : "characters");
     } finally {
       this.store.setOperation("session", null);
     }
@@ -157,7 +159,7 @@ export class SessionController {
     if (this.store.backend === "online" && session.connection === "server") {
       await this.refresh(session.session_id, session.session_name, { activate: true });
     }
-    this.store.setSection(this.store.current()?.characters.length ? "game" : "characters");
+    this.store.setSection(this.store.current()?.campaign.started ? "game" : "characters");
   }
 
   closeDelete() {
@@ -285,7 +287,7 @@ export class ShellController {
     const state = this.store.current();
     if (this.store.backend !== "online" || state?.connection !== "server" || this.store.isBusy()) return;
     this.store.setOperation("sync", true);
-    this.store.setFeedback({ kind: "pending", key: "game.syncing" });
+    this.store.setFeedback(null);
     const refreshed = await this.sessions.refresh(state.session_id, state.session_name);
     this.store.setFeedback({
       kind: refreshed ? "success" : "error",
@@ -316,6 +318,7 @@ export class CharacterController {
       this.e.characterName.focus();
     });
     this.e.goToGame.addEventListener("click", () => this.store.setSection("game"));
+    this.e.startAdventure.addEventListener("click", () => this.startAdventure());
   }
 
   readStats() {
@@ -381,6 +384,27 @@ export class CharacterController {
       this.store.setOperation("character", null);
     }
   }
+
+  async startAdventure() {
+    const state = this.store.current();
+    if (!state || state.connection !== "server" || !state.characters.length
+      || state.campaign.started || this.store.operation.campaign) return;
+    this.store.setOperation("campaign", state.session_id);
+    this.e.characterMessage.textContent = t("characters.startingAdventure");
+    try {
+      const result = await this.api.startCampaign(state.session_id);
+      const activate = this.store.currentSessionId() === state.session_id;
+      this.store.putSession(replaceServerState(result.state), activate);
+      this.store.showCharacterNext = false;
+      this.e.characterMessage.textContent = t("characters.adventureStarted", { title: result.title });
+      if (activate) this.store.setSection("game");
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "network_error") this.store.backend = "offline";
+      this.e.characterMessage.textContent = t("characters.startError");
+    } finally {
+      this.store.setOperation("campaign", null);
+    }
+  }
 }
 
 export class TurnController {
@@ -406,7 +430,8 @@ export class TurnController {
   }
 
   canPlay(state) {
-    return this.store.backend === "online" && state?.connection === "server" && state.characters.length > 0;
+    return this.store.backend === "online" && state?.connection === "server"
+      && state.characters.length > 0 && state.campaign.started;
   }
 
   saveReceipt(sessionId, result, before, after) {
@@ -447,13 +472,13 @@ export class TurnController {
     this.store.pendingAttempt = createTurnAttempt(this.store.pendingAttempt, state, { characterId, text });
     const attempt = this.store.pendingAttempt;
     this.store.setOperation("turn", "planning");
-    this.store.setFeedback({ kind: "pending", key: "game.thinkingHint" });
+    this.store.setFeedback(null);
     try {
       const result = await this.api.submitTurn(state.session_id, attempt);
       if (result.status === "awaiting_roll") {
         this.store.putSession(resultState(state, result), this.store.currentSessionId() === state.session_id);
         this.store.pendingAttempt = null;
-        this.store.setFeedback({ kind: "pending", key: "check.ready" });
+        this.store.setFeedback(null);
         queueMicrotask(() => this.e.rollD20.focus());
       } else {
         this.store.pendingAttempt = null;
@@ -482,7 +507,7 @@ export class TurnController {
     const pending = state?.pending_turn;
     if (!pending || this.store.operation.turn !== "idle") return;
     this.store.setOperation("turn", "rolling");
-    this.store.setFeedback({ kind: "pending", key: "check.waitingForMaster" });
+    this.store.setFeedback(null);
     this.diceView.start();
     try {
       const result = await this.api.rollTurn(state.session_id, pending.action_id, pending.sequence);
@@ -492,7 +517,7 @@ export class TurnController {
       await this.diceView.settle(check);
       if (result.status === "awaiting_roll") {
         this.store.putSession(resultState(state, result), this.store.currentSessionId() === state.session_id);
-        this.store.setFeedback({ kind: "pending", key: "check.nextReady" });
+        this.store.setFeedback(null);
         queueMicrotask(() => this.e.rollD20.focus());
       } else {
         this.finishResult(state, { characterId: pending.character_id, text: pending.text }, result);

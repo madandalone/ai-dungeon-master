@@ -35,6 +35,10 @@ MIN_DIFFICULTY = 5
 MAX_DIFFICULTY = 30
 # A run of this many consecutive words copied from the hidden plot counts as quoting it.
 QUOTE_WORDS = 6
+# Shorter words ("в", "на", "из") cannot identify an item; longer ones are matched by stem.
+STEM_MIN = 3
+# Characters cut from an item word so its inflected forms still match ("меч" -> "мечом").
+STEM_ENDING = 3
 
 
 def _reference_pattern(references: Sequence[str]) -> re.Pattern[str] | None:
@@ -120,10 +124,51 @@ def _inventory_errors(response: TurnResponse, characters: Sequence[CharacterStat
     return errors
 
 
+def _words(text: str) -> list[str]:
+    return _WORDS.findall(text.casefold().replace("ё", "е"))
+
+
+def _mentioned(item: str, words: set[str]) -> bool:
+    """True when any word of the item appears in the text in some inflected form.
+
+    A stem match, not morphology: it may accept an unrelated word with the same stem,
+    and an item with no word of STEM_MIN letters is always treated as mentioned.
+    """
+    stems = [word[:max(STEM_MIN, len(word) - STEM_ENDING)]
+             for word in _words(item) if len(word) >= STEM_MIN]
+    return not stems or any(word.startswith(stem) for stem in stems for word in words)
+
+
+def _unexplained_item_errors(response: TurnResponse, request: TurnRequest) -> list[str]:
+    """Reject item changes that neither the narrative nor the player's action mention.
+
+    A small model can attach an unrelated change (dropping a sword while inspecting a
+    chest); Engine would apply it as valid. Hit points are not checked: damage and
+    healing are described in too many words to match reliably.
+    """
+    words = set(_words(response.narrative)) | set(_words(request.player_action))
+    known = {character.name for character in request.game_state.active_characters}
+    errors = []
+    for update in response.state_updates:
+        if update.character_name not in known:
+            continue  # Reported separately as an unknown character_name.
+        unexplained = [item for item in (*update.items_added, *update.items_removed)
+                       if not _mentioned(item, words)]
+        if unexplained:
+            errors.append(
+                f"state_updates для {json.dumps(update.character_name, ensure_ascii=False)} "
+                f"меняет предметы {json.dumps(unexplained, ensure_ascii=False)}, но ни narrative, "
+                "ни действие игрока о них не говорят. Предлагай только изменения, которые следуют "
+                "из заявленного действия: если предмет действительно получен или потерян, опиши "
+                "это в narrative, иначе убери его из state_updates."
+            )
+    return errors
+
+
 def _word_runs(texts: Sequence[str]) -> set[tuple[str, ...]]:
     runs = set()
     for text in texts:
-        words = _WORDS.findall(text.casefold().replace("ё", "е"))
+        words = _words(text)
         runs.update(tuple(words[start:start + QUOTE_WORDS])
                     for start in range(len(words) - QUOTE_WORDS + 1))
     return runs
@@ -262,6 +307,7 @@ def validate_turn(response: TurnResponse, *, request: TurnRequest) -> TurnRespon
         field: value for field, value in generated_names.items() if field not in blank
     }))
     errors.extend(_inventory_errors(response, request.game_state.active_characters))
+    errors.extend(_unexplained_item_errors(response, request))
     unknown_names = sorted({
         update.character_name for update in response.state_updates
         if update.character_name not in allowed_names

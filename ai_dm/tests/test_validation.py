@@ -18,7 +18,7 @@ class ValidationTests(unittest.TestCase):
         for invalid in (False, True):
             with self.subTest(invalid=invalid):
                 turn = TurnResponse(**{
-                    **TURN, "narrative": "Вы видите cклеп.",
+                    **TURN, "narrative": "Вы видите cклеп и ключ.",
                     "state_updates": [{"character_name": "Элиас", "items_added": ["Cтарый ключ"]}],
                     "dm_thoughts": "English" if invalid else "Cтраж ждёт.",
                 })
@@ -36,7 +36,7 @@ class ValidationTests(unittest.TestCase):
                 else:
                     normalized_turn = validate_turn(turn, request=request)
                     normalized_campaign = validate_campaign(campaign, request=campaign_request)
-                    self.assertEqual(normalized_turn.narrative, "Вы видите склеп.")
+                    self.assertEqual(normalized_turn.narrative, "Вы видите склеп и ключ.")
                     self.assertEqual(normalized_campaign.intro_narrative, "Вы видите склеп.")
                     self.assertIsNot(normalized_turn.state_updates[0], turn.state_updates[0])
                 self.assertEqual(list(values), before)
@@ -105,9 +105,12 @@ class ValidationTests(unittest.TestCase):
             [{"character_name": "Элиас", "items_added": ["Ключ"]},
              {"character_name": "Элиас", "items_removed": ["Ключ"]}],
         ]
+        narrative = "Вы находите ключ и бросаете факел."
         for updates in valid:
             with self.subTest(updates=updates):
-                validate_turn(TurnResponse(**{**TURN, "state_updates": updates}), request=request)
+                validate_turn(TurnResponse(**{
+                    **TURN, "narrative": narrative, "state_updates": updates,
+                }), request=request)
         invalid = [
             [{"character_name": "Элиас", "items_removed": ["Факел"]},
              {"character_name": "Элиас", "items_removed": ["Факел"]}],
@@ -159,6 +162,61 @@ class ValidationTests(unittest.TestCase):
             **TURN, "state_updates": [{"character_name": "Элиас", "hp_change": -100}],
         })
         validate_turn(response, request=turn_request())
+
+
+class UnexplainedItemChangeTests(unittest.TestCase):
+    def setUp(self):
+        self.request = turn_request()
+        self.request.game_state.active_characters[0].inventory = ["длинный меч", "Факел"]
+
+    def turn(self, narrative, **update):
+        return TurnResponse(**{
+            **TURN, "narrative": narrative,
+            "state_updates": [{"character_name": "Элиас", **update}],
+        })
+
+    def test_removing_an_item_the_narrative_does_not_mention_is_rejected(self):
+        # Seen live with qwen2.5:7b: inspecting a chest silently dropped the sword.
+        response = self.turn("Вы осматриваете сундук: крышка заклинила.", items_removed=["длинный меч"])
+        with self.assertRaises(ValueError) as caught:
+            validate_turn(response, request=self.request)
+        message = str(caught.exception)
+        self.assertIn('state_updates для "Элиас" меняет предметы ["длинный меч"]', message)
+        self.assertIn("иначе убери его из state_updates", message)
+
+    def test_unmentioned_additions_are_rejected_too(self):
+        response = self.turn("Вы осматриваете дверь.", items_added=["Ключ"])
+        with self.assertRaisesRegex(ValueError, r'меняет предметы \["Ключ"\]'):
+            validate_turn(response, request=self.request)
+
+    def test_inflected_mentions_in_narrative_are_accepted(self):
+        response = self.turn(
+            "Вы поддеваете крышку мечом, но клинок ломается; внутри лежит медный ключик.",
+            items_added=["Медный ключ"], items_removed=["длинный меч"],
+        )
+        validate_turn(response, request=self.request)
+
+    def test_an_item_named_only_in_the_player_action_is_accepted(self):
+        self.request.player_action = "Бросаю факел в колодец."
+        response = self.turn("Огонь гаснет где-то далеко внизу.", items_removed=["Факел"])
+        validate_turn(response, request=self.request)
+
+    def test_private_notes_do_not_explain_a_change_to_the_player(self):
+        response = TurnResponse(**{
+            **TURN, "narrative": "Вы осматриваете дверь.", "dm_thoughts": "Меч потерян.",
+            "state_updates": [{"character_name": "Элиас", "items_removed": ["длинный меч"]}],
+        })
+        with self.assertRaisesRegex(ValueError, "меняет предметы"):
+            validate_turn(response, request=self.request)
+
+    def test_unknown_character_is_reported_only_as_unknown(self):
+        response = TurnResponse(**{
+            **TURN, "state_updates": [{"character_name": "Призрак", "items_added": ["Кость"]}],
+        })
+        with self.assertRaises(ValueError) as caught:
+            validate_turn(response, request=self.request)
+        self.assertIn("неизвестные character_name", str(caught.exception))
+        self.assertNotIn("меняет предметы", str(caught.exception))
 
 
 PLOT = ("Кузнец Берн скрывает под верстаком письмо некроманта и по ночам носит ему кости "

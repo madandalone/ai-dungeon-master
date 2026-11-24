@@ -79,6 +79,8 @@ class SQLiteSessionStore:
                 ("room_context", "TEXT NOT NULL DEFAULT ''"),
                 ("campaign_title", "TEXT NOT NULL DEFAULT ''"),
                 ("campaign_started", "INTEGER NOT NULL DEFAULT 0"),
+                ("campaign_theme", "TEXT NOT NULL DEFAULT 'Приключение в фэнтезийном мире'"),
+                ("opening_hook", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if column not in columns:
                     connection.execute(
@@ -138,6 +140,8 @@ class SQLiteSessionStore:
         name: str,
         state: GameState,
         hidden_plot: str = "Test campaign",
+        campaign_theme: str = "Приключение в фэнтезийном мире",
+        opening_hook: str = "",
     ) -> None:
         """Create a session with its initial state and private plot."""
         if state.session_id != session_id:
@@ -145,9 +149,10 @@ class SQLiteSessionStore:
 
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO sessions (id, name, hidden_plot) "
-                "VALUES (?, ?, ?)",
-                (session_id, name, hidden_plot),
+                "INSERT INTO sessions "
+                "(id, name, hidden_plot, campaign_theme, opening_hook) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, name, hidden_plot, campaign_theme, opening_hook),
             )
             connection.execute(
                 "INSERT INTO game_states (session_id, payload) "
@@ -184,7 +189,8 @@ class SQLiteSessionStore:
         """Return the private campaign record, or None for an unknown session."""
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT campaign_started, campaign_title, hidden_plot, room_context "
+                "SELECT campaign_started, campaign_title, hidden_plot, room_context, "
+                "campaign_theme, opening_hook "
                 "FROM sessions WHERE id = ?",
                 (session_id,),
             ).fetchone()
@@ -195,6 +201,8 @@ class SQLiteSessionStore:
             "title": row[1],
             "hidden_plot": row[2],
             "room_context": row[3],
+            "theme": row[4],
+            "opening_hook": row[5],
         }
 
     def save_campaign(
