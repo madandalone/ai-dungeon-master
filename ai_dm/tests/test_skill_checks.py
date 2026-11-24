@@ -172,6 +172,41 @@ class SkillCheckGenerationTests(unittest.TestCase):
         self.assertEqual(result.status, "check")
         self.assertEqual(client.chat.completions.create.call_count, 2)
 
+    def test_unexplained_item_loss_in_a_resolved_plan_is_repaired(self):
+        # The live qwen2.5:7b answer to "Осматриваю сундук." dropped the sword without a word.
+        def plan(state_updates):
+            return completion({"status": "resolved", "check": None, "response": {
+                "narrative": "Вы осматриваете сундук: крышка заклинила.",
+                "state_updates": state_updates, "new_location": None, "dm_thoughts": "",
+            }})
+
+        client = Mock()
+        client.chat.completions.create.side_effect = [
+            plan([{"character_name": "Элиас", "items_removed": ["длинный меч"]}]),
+            plan([]),
+        ]
+        inspect = request()
+        inspect.player_action = "Осматриваю сундук."
+        inspect.game_state.active_characters[0].inventory = ["длинный меч"]
+
+        result = AIDungeonMaster(client).plan_turn(inspect)
+
+        self.assertEqual((result.status, result.response.state_updates), ("resolved", []))
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        repair = client.chat.completions.create.call_args_list[1].kwargs["messages"][-1]["content"]
+        self.assertIn('меняет предметы ["длинный меч"]', repair)
+
+    def test_turn_prompt_keeps_finds_within_the_scene_and_hidden_plot(self):
+        client = Mock()
+        client.chat.completions.create.return_value = completion({
+            "status": "check", "response": None,
+            "check": {"ability": "strength", "difficulty": 10, "reason": "Крышка заклинила."},
+        })
+        AIDungeonMaster(client).plan_turn(request())
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        self.assertIn("других\nсекретов нет, описывай только перечисленное", prompt)
+        self.assertIn("Не убирай предмет, о потере которого narrative молчит.", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

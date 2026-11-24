@@ -48,13 +48,13 @@ class RussianOutputTests(unittest.TestCase):
 
     def test_lookalikes_are_normalized_in_all_generated_turn_fields(self):
         data = {
-            **TURN, "narrative": "Вы входите в cклеп. Cтраж ждёт у двеpи.",
+            **TURN, "narrative": "Вы входите в cклеп и находите ключ. Cтраж ждёт у двеpи.",
             "dm_thoughts": "Cтраж охраняет кpипту.", "new_location": "Cтарый cклеп",
             "state_updates": [{"character_name": "Элиас", "items_added": ["Cтарый ключ"]}],
         }
         client = fake_client(completion(json.dumps(data)))
         result = AIDungeonMaster(client).process_turn(turn_request())
-        self.assertEqual(result.narrative, "Вы входите в склеп. Страж ждёт у двери.")
+        self.assertEqual(result.narrative, "Вы входите в склеп и находите ключ. Страж ждёт у двери.")
         self.assertEqual(result.dm_thoughts, "Страж охраняет крипту.")
         self.assertEqual(result.new_location, "Старый склеп")
         self.assertEqual(result.state_updates[0].items_added, ["Старый ключ"])

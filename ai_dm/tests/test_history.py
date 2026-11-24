@@ -121,6 +121,7 @@ class DemoSessionTests(unittest.TestCase):
     def test_two_turns_receive_updated_state_and_only_accepted_history(self):
         first = {
             **TURN,
+            "narrative": "Вы находите ключ, но роняете кинжал в подвал.",
             "new_location": "Подвал",
             "state_updates": [{
                 "character_name": "Элиас", "hp_change": -3,
